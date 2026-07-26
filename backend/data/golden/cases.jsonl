@@ -1,0 +1,20 @@
+{"id":"g1","question":"hello","role":"recruiter","expected_route":"greeting"}
+{"id":"g2","question":"thanks","role":"recruiter","expected_route":"greeting"}
+{"id":"g3","question":"bye","role":"employee","expected_route":"greeting"}
+{"id":"s1","question":"How many employees work in Engineering?","role":"recruiter","expected_route":"needs_tools","plan_hint":"sql"}
+{"id":"s2","question":"Who is Alice Nguyen's manager?","role":"recruiter","expected_route":"needs_tools","plan_hint":"employee"}
+{"id":"s3","question":"List employees in Berlin","role":"manager","expected_route":"needs_tools","plan_hint":"sql"}
+{"id":"r1","question":"Find people with Python experience","role":"recruiter","expected_route":"needs_tools","plan_hint":"resume_search"}
+{"id":"r2","question":"Who has Kubernetes skills?","role":"recruiter","expected_route":"needs_tools","plan_hint":"resume_search"}
+{"id":"h1","question":"How many Python developers joined after 2023?","role":"recruiter","expected_route":"needs_tools","plan_hint":"hybrid"}
+{"id":"h2","question":"Count React engineers hired after 2022","role":"recruiter","expected_route":"needs_tools","plan_hint":"hybrid"}
+{"id":"c1","question":"Tell me about Bob","role":"recruiter","expected_route":"needs_tools","plan_hint":"clarify_or_employee"}
+{"id":"c2","question":"What is his salary?","role":"employee","expected_route":"needs_tools","plan_hint":"employee"}
+{"id":"s4","question":"Average tenure is not needed; show hire dates in Sales","role":"recruiter","expected_route":"needs_tools"}
+{"id":"r3","question":"Search resumes for NLP","role":"manager","expected_route":"needs_tools"}
+{"id":"g4","question":"good morning","role":"recruiter","expected_route":"greeting"}
+{"id":"s5","question":"Employees in UAE","role":"recruiter","expected_route":"needs_tools"}
+{"id":"h3","question":"How many Go developers in Germany joined after 2021?","role":"recruiter","expected_route":"needs_tools","plan_hint":"hybrid"}
+{"id":"r4","question":"Who mentions Machine Learning on their resume?","role":"recruiter","expected_route":"needs_tools"}
+{"id":"s6","question":"Department roster for Product","role":"manager","expected_route":"needs_tools"}
+{"id":"g5","question":"thank you","role":"manager","expected_route":"greeting"}

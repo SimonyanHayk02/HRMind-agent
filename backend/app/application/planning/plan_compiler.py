@@ -3,17 +3,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from app.application.planning.heuristic_planner import try_heuristic_plan
 from app.application.planning.plan_schema import ExecutionPlan
 from app.application.schema.catalog_service import CatalogService
 from app.application.understanding.extract_query_state import extract_query_state
 from app.application.understanding.plan_from_query_state import plan_from_query_state
+from app.config.logging import get_logger
 from app.domain.auth import AuthContext
 from app.domain.query_state import QueryState
 from app.domain.schema_catalog import default_employee_catalog
 from app.domain.session import SessionMemory
 from app.domain.tools.registry import ToolRegistry
 from app.ports.llm import LLMClient
+
+logger = get_logger(__name__)
+
+_CLARIFY_FALLBACK = (
+    "I couldn't build a reliable plan for that. "
+    "Try asking with a department, country, city, or job title "
+    "(for example: list Software Engineers in Engineering)."
+)
 
 
 class PlanCompiler:
@@ -92,7 +103,12 @@ class PlanCompiler:
         catalog = self._catalog.get() if self._catalog else default_employee_catalog()
         query_state = extract_query_state(question, catalog=catalog, memory=memory)
 
+        # Prefer QueryState even at moderate confidence when filters are grounded.
         structured = plan_from_query_state(query_state, memory=memory)
+        if structured is None and query_state.filters:
+            structured = plan_from_query_state(
+                query_state, memory=memory, min_confidence=0.5
+            )
         if structured is not None:
             return structured
 
@@ -103,13 +119,26 @@ class PlanCompiler:
         user = json.dumps(
             self._context_packet(question, auth, memory, query_state), default=str
         )
-        raw = await self._llm.complete(
-            system=self._load_prompt(), user=user, temperature=0.0, response_json=True
-        )
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-        data = json.loads(raw)
-        return ExecutionPlan.model_validate(data)
+        try:
+            raw = await self._llm.complete(
+                system=self._load_prompt(), user=user, temperature=0.0, response_json=True
+            )
+            raw = (raw or "").strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+            data = json.loads(raw)
+            return ExecutionPlan.model_validate(data)
+        except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
+            logger.warning(
+                "planner_llm_invalid_plan",
+                question=question[:200],
+                error_type=type(exc).__name__,
+                error=str(exc)[:400],
+            )
+            return ExecutionPlan(
+                nodes=[],
+                response_strategy="template",
+                clarify_question=_CLARIFY_FALLBACK,
+            )

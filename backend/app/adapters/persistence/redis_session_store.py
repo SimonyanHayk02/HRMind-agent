@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pydantic import ValidationError
 from redis.asyncio import Redis
 
+from app.config.logging import get_logger
 from app.domain.session import SessionMemory
+
+logger = get_logger(__name__)
 
 
 class RedisSessionStore:
@@ -27,7 +31,17 @@ class RedisSessionStore:
             return None
         # Refresh TTL on active reads so long conversations stay alive.
         await self._redis.expire(key, self._ttl)
-        return SessionMemory.model_validate_json(raw)
+        try:
+            return SessionMemory.model_validate_json(raw)
+        except ValidationError as exc:
+            # Corrupt / schema-drifted sessions must not 500 cold starts.
+            logger.warning(
+                "session_deserialize_failed",
+                session_id=session_id,
+                error=str(exc)[:300],
+            )
+            await self._redis.delete(key)
+            return None
 
     async def save(self, session: SessionMemory) -> None:
         await self._redis.set(

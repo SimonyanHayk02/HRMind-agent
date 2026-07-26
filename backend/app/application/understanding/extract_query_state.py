@@ -7,6 +7,7 @@ from app.application.planning.heuristic_planner import (
     refers_to_prior_set,
 )
 from app.application.planning.unsupported import is_unsupported_topic
+from app.application.understanding.role_phrases import match_role_positions
 from app.domain.query_state import FilterSlot, QueryState
 from app.domain.schema_catalog import SchemaCatalog
 from app.domain.session import SessionMemory
@@ -37,28 +38,6 @@ _ABOUT_RE = re.compile(
     re.I,
 )
 _YEAR_RE = re.compile(r"(?:after|since)\s+(20\d{2})", re.I)
-
-# Natural job-role phrases → one or more concrete position titles in the DB.
-_ROLE_PHRASES: list[tuple[str, list[str]]] = [
-    ("software developers", ["Software Engineer"]),
-    ("software developer", ["Software Engineer"]),
-    ("software engineers", ["Software Engineer"]),
-    ("software engineer", ["Software Engineer"]),
-    ("senior engineers", ["Senior Engineer"]),
-    ("senior engineer", ["Senior Engineer"]),
-    ("staff engineers", ["Staff Engineer"]),
-    ("staff engineer", ["Staff Engineer"]),
-    ("engineering managers", ["Engineering Manager"]),
-    ("engineering manager", ["Engineering Manager"]),
-    ("product managers", ["Product Manager"]),
-    ("product manager", ["Product Manager"]),
-    ("product designers", ["Product Designer"]),
-    ("product designer", ["Product Designer"]),
-    ("developers", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
-    ("developer", ["Software Engineer"]),
-    ("engineers", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
-    ("engineer", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
-]
 
 _FACET_WORD = {
     "countries": "country",
@@ -191,18 +170,17 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
     used_fields: set[str] = set()
 
     # Role phrases first (developers / software engineers → position IN (...))
-    for phrase, positions in sorted(_ROLE_PHRASES, key=lambda x: len(x[0]), reverse=True):
-        if re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", lower):
-            if len(positions) == 1:
-                found.append(
-                    FilterSlot(field="position", op="eq", value=positions[0], confidence=0.92)
-                )
-            else:
-                found.append(
-                    FilterSlot(field="position", op="in", value=list(positions), confidence=0.9)
-                )
-            used_fields.add("position")
-            break
+    role = match_role_positions(question)
+    if role is not None:
+        if isinstance(role, list):
+            found.append(
+                FilterSlot(field="position", op="in", value=role, confidence=0.9)
+            )
+        else:
+            found.append(
+                FilterSlot(field="position", op="eq", value=role, confidence=0.92)
+            )
+        used_fields.add("position")
 
     # Longer values first so "New York" wins over "York" if present
     candidates: list[tuple[str, str, str, float]] = []  # field, canonical, matched, conf

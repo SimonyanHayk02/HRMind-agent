@@ -148,12 +148,13 @@ class ChatService:
         answer, confidence, sources, clarify = await self._formatter.format(
             body.question, plan, state
         )
-        await self._memory.append_assistant(session, answer)
+        safe_sources = [s for s in (sources or []) if getattr(s, "ref", None) is not None]
+        await self._memory.append_assistant(session, answer or "")
         return ChatResponse(
             session_id=session.session_id,
-            answer=answer,
-            confidence=confidence,
-            sources=sources or [],
+            answer=answer or "",
+            confidence=confidence if confidence is not None else 0.0,
+            sources=safe_sources,
             clarify=clarify,
             trace_id=trace_id,
             degraded=state.degraded,

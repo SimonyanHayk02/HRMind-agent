@@ -5,6 +5,7 @@ import re
 from app.application.memory.context_updates import filters_from_constraint_memory
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.planning.unsupported import UNSUPPORTED_ANSWER, is_unsupported_topic
+from app.application.understanding.role_phrases import match_role_positions
 from app.domain.session import SessionMemory
 from app.tools.employee.tool import extract_manager_subject
 
@@ -739,6 +740,31 @@ def try_heuristic_plan(
             response_strategy="template",
             active_cohort_node="sql1",
         )
+
+    # List employees by role phrase ("software developers", "product managers")
+    role = match_role_positions(q)
+    if role is not None and not scoped_followup and not _COUNT_RE.search(q):
+        if any(
+            w in lower
+            for w in ("list", "show", "who", "names", "employees", "people", "staff", "can you")
+        ):
+            return ExecutionPlan(
+                nodes=[
+                    PlanNode(
+                        id="sql1",
+                        kind="tool",
+                        name="sql",
+                        params={
+                            "mode": "constrained",
+                            "count_only": False,
+                            "filters": {"position": role},
+                            "columns": _NAME_COLUMNS,
+                        },
+                    )
+                ],
+                response_strategy="template",
+                active_cohort_node="sql1",
+            )
 
     # Resume / skills search — intersect prior set or apply constraint scope.
     skill_match = _SKILL_RE.search(q)

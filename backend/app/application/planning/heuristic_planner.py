@@ -90,6 +90,23 @@ _FACET_LIST_RE = re.compile(
     re.I,
 )
 _CITY_RE = re.compile(r"\b(?:in|from)\s+(Berlin|Dubai|London|Paris|New York)\b", re.I)
+_COUNTRY_RE = re.compile(
+    r"\b(?:in|from|based in)\s+(?:the\s+)?"
+    r"(USA|US|United States|UK|United Kingdom|UAE|United Arab Emirates|Germany|France)\b",
+    re.I,
+)
+_COUNTRY_ALIASES = {
+    "usa": "USA",
+    "us": "USA",
+    "united states": "USA",
+    "uk": "UK",
+    "united kingdom": "UK",
+    "uae": "UAE",
+    "united arab emirates": "UAE",
+    "germany": "Germany",
+    "france": "France",
+}
+
 _PERSON_LOCATION_RE = re.compile(
     r"\bwhere\s+(?:(?:does|do|is)\s+)?(?:the\s+)?"
     r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)"
@@ -118,6 +135,17 @@ _NAME_COLUMNS = ["id", "first_name", "last_name", "department", "position"]
 def _dept_hint(question: str) -> str | None:
     m = _DEPT_IN_TEXT_RE.search(question)
     return m.group(1) if m else None
+
+
+def _normalize_country(raw: str) -> str:
+    return _COUNTRY_ALIASES.get(raw.strip().lower(), raw.strip())
+
+
+def _detect_country(question: str) -> str | None:
+    m = _COUNTRY_RE.search(question)
+    if not m:
+        return None
+    return _normalize_country(m.group(1))
 
 
 _FACET_WORD_TO_COL = {
@@ -565,11 +593,18 @@ def try_heuristic_plan(
 
     # Follow-up: refine prior set by city ("of them in Berlin")
     city_match = _CITY_RE.search(q)
+    country = _detect_country(q)
     if anaphora and city_match:
         return _sql_over_ids(
             prior_ids,
             count_only=bool(_COUNT_RE.search(q)),
             extra_filters={"city": city_match.group(1)},
+        )
+    if anaphora and country:
+        return _sql_over_ids(
+            prior_ids,
+            count_only=bool(_COUNT_RE.search(q)),
+            extra_filters={"country": country},
         )
 
     # Follow-up: refine prior set by department
@@ -586,13 +621,43 @@ def try_heuristic_plan(
     if anaphora and _COUNT_RE.search(q) and not _SKILL_RE.search(q):
         return _sql_over_ids(prior_ids, count_only=True)
 
-    # Constraint-only follow-up with optional city refine
+    # "of them from USA" after org-wide headcount (no saved IDs) → location filter globally
+    if refers and not prior_ids and not _SKILL_RE.search(q):
+        loc_filters: dict = dict(scope_filters)
+        if city_match:
+            loc_filters["city"] = city_match.group(1)
+        if country:
+            loc_filters["country"] = country
+        if loc_filters and (_COUNT_RE.search(q) or city_match or country or is_list_followup(q)):
+            if _COUNT_RE.search(q) or ((city_match or country) and not is_list_followup(q)):
+                return _filtered_count_plan(loc_filters)
+            return ExecutionPlan(
+                nodes=[
+                    PlanNode(
+                        id="sql1",
+                        kind="tool",
+                        name="sql",
+                        params={
+                            "mode": "constrained",
+                            "count_only": False,
+                            "filters": loc_filters,
+                            "columns": _NAME_COLUMNS,
+                        },
+                    )
+                ],
+                response_strategy="template",
+                active_cohort_node="sql1",
+            )
+
+    # Constraint-only follow-up with optional city/country refine
     if scoped_followup and not prior_ids and not _SKILL_RE.search(q):
         filters = dict(scope_filters)
         if city_match:
             filters["city"] = city_match.group(1)
-        if filters and (_COUNT_RE.search(q) or city_match or is_list_followup(q)):
-            if _COUNT_RE.search(q) or (city_match and not is_list_followup(q)):
+        if country:
+            filters["country"] = country
+        if filters and (_COUNT_RE.search(q) or city_match or country or is_list_followup(q)):
+            if _COUNT_RE.search(q) or ((city_match or country) and not is_list_followup(q)):
                 return _filtered_count_plan(filters)
             return ExecutionPlan(
                 nodes=[
@@ -627,6 +692,31 @@ def try_heuristic_plan(
                 w in lower for w in ("how many", "count", "number of", "different")
             ):
                 return _department_list_plan(dept)
+
+    # Count/list by country (global)
+    if country and not scoped_followup and (
+        _COUNT_RE.search(q)
+        or any(w in lower for w in ("employee", "people", "staff", "list", "who"))
+    ):
+        if _COUNT_RE.search(q):
+            return _filtered_count_plan({"country": country})
+        return ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "count_only": False,
+                        "filters": {"country": country},
+                        "columns": _NAME_COLUMNS,
+                    },
+                )
+            ],
+            response_strategy="template",
+            active_cohort_node="sql1",
+        )
 
     # List/filter by city (global)
     if city_match and not scoped_followup and any(

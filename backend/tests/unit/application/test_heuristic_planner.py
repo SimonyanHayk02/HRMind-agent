@@ -208,7 +208,26 @@ def test_names_please_without_context_clarifies() -> None:
     assert "which names" in plan.clarify_question.lower()
 
 
-def test_list_engineering_uses_department_list_plan() -> None:
+def test_of_them_from_usa_without_ids_counts_country() -> None:
+    """After org headcount we may have no last_employee_ids — still answer location."""
+    plan = try_heuristic_plan("how much of them are from USA?")
+    assert plan is not None
+    assert plan.nodes[-1].params.get("count_only") is True or plan.nodes[-1].params.get(
+        "count_distinct"
+    ) is None
+    assert plan.nodes[-1].params["filters"]["country"] == "USA"
+    assert plan.active_cohort_node == "cohort"
+
+
+def test_of_them_from_usa_with_prior_ids() -> None:
+    memory = _memory_with_ids("00000000-0000-0000-0000-000000000001")
+    plan = try_heuristic_plan("how many of them are from the United States?", memory=memory)
+    assert plan is not None
+    assert plan.nodes[-1].params["filters"]["country"] == "USA"
+    assert plan.nodes[-1].params["filters"]["employee_ids"] == [
+        "00000000-0000-0000-0000-000000000001"
+    ]
+
     plan = try_heuristic_plan("List employees in Engineering")
     assert plan is not None
     assert plan.nodes[0].name == "sql"

@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   test:
@@ -21,3 +23,31 @@ jobs:
         run: pytest -q
       - name: Golden eval smoke
         run: python scripts/run_eval.py
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::Missing GitHub secret RAILWAY_TOKEN (Railway Project Token)."
+            echo "Create one: Railway project → Settings → Tokens → Project Token"
+            echo "Then: GitHub repo → Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          args=(up --ci --detach)
+          if [ -n "$RAILWAY_SERVICE_ID" ]; then
+            args+=(--service "$RAILWAY_SERVICE_ID")
+          fi
+          railway "${args[@]}"

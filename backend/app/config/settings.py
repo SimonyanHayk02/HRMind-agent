@@ -1,6 +1,19 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_database_url(url: str) -> str:
+    """Accept Neon/Railway postgres URLs and make them asyncpg-compatible."""
+    u = url.strip()
+    if u.startswith("postgres://"):
+        u = "postgresql://" + u[len("postgres://") :]
+    if u.startswith("postgresql://") and "+asyncpg" not in u.split("://", 1)[0]:
+        u = "postgresql+asyncpg://" + u[len("postgresql://") :]
+    # asyncpg uses `ssl=`, not libpq's `sslmode=`
+    u = u.replace("sslmode=", "ssl=")
+    return u
 
 
 class Settings(BaseSettings):
@@ -33,6 +46,13 @@ class Settings(BaseSettings):
     resume_storage_dir: str = "data/seed/resumes"
     parse_version: str = "1"
     cors_origins: str = "*"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        if isinstance(value, str) and value:
+            return normalize_database_url(value)
+        return value
 
 
 @lru_cache

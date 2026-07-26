@@ -70,8 +70,27 @@ postgresql+asyncpg://USER:PASS@HOST/DB?ssl=require
 ```
 
 Notes:
-- `asyncpg` uses `ssl=require` (not `sslmode=require`)
-- URL-encode special characters in password
+- You can paste either form; the app auto-converts `postgresql://` → `postgresql+asyncpg://` and `sslmode=` → `ssl=`
+- URL-encode special characters in password (`@` → `%40`, `#` → `%23`, etc.)
+- Prefer Neon **pooled** connection string for the web service
+
+### Healthcheck failure (common)
+
+Railway shows **Network › Healthcheck** failure when the process never answers `GET /health` in time.
+
+Usual causes:
+1. **`DATABASE_URL` missing / wrong** on the **web service** (not Redis) → `alembic upgrade` exits → uvicorn never starts
+2. **pgvector not enabled** on Neon → migration fails
+3. **Redis URL missing** (app can fall back, but still set `REDIS_URL`)
+4. Timeout too short (repo now uses 120s)
+
+**What to do:** open the failed deploy → **Deploy Logs** (not just Build). Look for `alembic` / `asyncpg` / `ssl` / `password authentication` errors.
+
+Quick checks in Neon SQL editor:
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+SELECT extname FROM pg_extension WHERE extname = 'vector';
+```
 
 ---
 

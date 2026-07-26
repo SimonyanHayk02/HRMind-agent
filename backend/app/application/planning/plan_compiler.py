@@ -12,10 +12,18 @@ from app.ports.llm import LLMClient
 
 
 class PlanCompiler:
-    def __init__(self, llm: LLMClient, tools: ToolRegistry, prompts_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        tools: ToolRegistry,
+        prompts_dir: Path | None = None,
+        *,
+        max_context: int = 8,
+    ) -> None:
         self._llm = llm
         self._tools = tools
         self._prompts_dir = prompts_dir or Path(__file__).resolve().parents[2] / "prompts"
+        self._max_context = max_context
 
     def _load_prompt(self) -> str:
         path = self._prompts_dir / "planner.md"
@@ -25,6 +33,30 @@ class PlanCompiler:
             "You are an HR agent planner. Return JSON ExecutionPlan with nodes "
             "(tool|operator), depends_on, response_strategy."
         )
+
+    def _context_packet(self, question: str, auth: AuthContext, memory: SessionMemory | None) -> dict:
+        recent: list[dict[str, str]] = []
+        entities: list[dict] = []
+        constraints: list[dict] = []
+        last_ids: list[str] = []
+        summary = ""
+        if memory:
+            for msg in memory.messages[-self._max_context :]:
+                recent.append({"role": msg.role, "content": msg.content[:800]})
+            entities = [e.model_dump(mode="json") for e in memory.entity_memory[-20:]]
+            constraints = [c.model_dump(mode="json") for c in memory.constraint_memory]
+            last_ids = list(memory.last_employee_ids)
+            summary = memory.summary or ""
+        return {
+            "question": question,
+            "role": auth.role.value,
+            "tools": self._tools.discover(),
+            "recent_messages": recent,
+            "last_employee_ids": last_ids,
+            "constraints": constraints,
+            "entities": entities,
+            "summary": summary,
+        }
 
     async def compile(
         self,
@@ -37,20 +69,7 @@ class PlanCompiler:
         if heuristic is not None:
             return heuristic
 
-        tool_catalog = json.dumps(self._tools.discover(), default=str)
-        entities = []
-        if memory:
-            entities = [e.model_dump(mode="json") for e in memory.entity_memory]
-        user = json.dumps(
-            {
-                "question": question,
-                "role": auth.role.value,
-                "tools": tool_catalog,
-                "entities": entities,
-                "summary": memory.summary if memory else "",
-            },
-            default=str,
-        )
+        user = json.dumps(self._context_packet(question, auth, memory), default=str)
         raw = await self._llm.complete(
             system=self._load_prompt(), user=user, temperature=0.0, response_json=True
         )

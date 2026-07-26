@@ -86,7 +86,9 @@ def wire_application_stack(container) -> None:
         max_history=settings.max_history,
         summary_trigger=settings.summary_trigger,
     )
-    planner = PlanCompiler(container.llm, tools, prompts_dir)
+    planner = PlanCompiler(
+        container.llm, tools, prompts_dir, max_context=settings.max_context
+    )
     validator = PlanValidator(tools, operators, max_nodes=settings.max_plan_nodes)
     node_runner = NodeRunner(tools, operators, timeout_ms=settings.tool_timeout_ms)
     graph_executor = LangGraphExecutor(node_runner)

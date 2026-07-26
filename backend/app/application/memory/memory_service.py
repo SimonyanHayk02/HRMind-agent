@@ -30,6 +30,8 @@ class MemoryService:
         if existing is not None:
             if existing.role != auth.role or existing.user_id != auth.user_id:
                 raise ForbiddenError("Session belongs to a different principal/role")
+            if existing.tenant_id != auth.tenant_id:
+                raise ForbiddenError("Session belongs to a different tenant")
             return existing
         session = SessionMemory(
             session_id=sid,
@@ -51,19 +53,29 @@ class MemoryService:
         await self._store.save(session)
         return session
 
-    async def upsert_entities(self, session: SessionMemory, entities: list[EntityRef]) -> None:
+    async def upsert_entities(self, session: SessionMemory, entities: list[EntityRef]) -> SessionMemory:
         by_id = {e.employee_id: e for e in session.entity_memory}
         for e in entities:
             by_id[e.employee_id] = e
         session.entity_memory = list(by_id.values())
+        session.updated_at = datetime.now(UTC)
         await self._store.save(session)
+        return session
+
+    async def merge_constraints(self, session: SessionMemory, constraints: list[ConstraintRef]) -> SessionMemory:
+        """Last write wins per field (active filter stack)."""
+        by_field = {c.field: c for c in session.constraint_memory}
+        for c in constraints:
+            by_field[c.field] = c
+        session.constraint_memory = list(by_field.values())
+        session.updated_at = datetime.now(UTC)
+        await self._store.save(session)
+        return session
 
     async def upsert_constraints(self, session: SessionMemory, constraints: list[ConstraintRef]) -> None:
-        session.constraint_memory.extend(constraints)
-        await self._store.save(session)
+        await self.merge_constraints(session, constraints)
 
     async def set_last_employee_ids(self, session: SessionMemory, employee_ids: list[str]) -> SessionMemory:
-        # Dedupe, preserve order
         seen: set[str] = set()
         ordered: list[str] = []
         for eid in employee_ids:

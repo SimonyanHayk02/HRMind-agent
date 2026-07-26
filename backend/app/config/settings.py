@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     resume_storage_dir: str = "data/seed/resumes"
     parse_version: str = "1"
     cors_origins: str = "*"
+    # When true (default in production/staging), Redis is required for chat sessions.
+    require_redis: bool | None = None
+    session_ttl_seconds: int = 86400
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -53,6 +56,12 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value:
             return normalize_database_url(value)
         return value
+
+    @property
+    def redis_required(self) -> bool:
+        if self.require_redis is not None:
+            return self.require_redis
+        return self.app_env.lower() in {"production", "prod", "staging"}
 
 
 @lru_cache

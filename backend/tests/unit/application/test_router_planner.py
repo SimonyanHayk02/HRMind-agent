@@ -15,6 +15,7 @@ from app.tools.greeting.tool import GreetingTool
 def test_rule_router_greeting() -> None:
     assert RuleRouter().route("hello there") == RouterLabel.GREETING
     assert RuleRouter().route("How many engineers?") is None
+    assert RuleRouter().route("thanks, say their names") is None
 
 
 def test_plan_validator_ok() -> None:

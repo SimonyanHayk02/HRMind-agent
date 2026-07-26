@@ -117,8 +117,9 @@ In the **web service** → Variables:
 | Variable | Value |
 |---|---|
 | `APP_ENV` | `production` |
+| `REQUIRE_REDIS` | `true` (optional; default required when `APP_ENV=production`) |
 | `DATABASE_URL` | `postgresql+asyncpg://...` (from step 4) |
-| `REDIS_URL` | from Railway Redis |
+| `REDIS_URL` | from Railway Redis (**required** in production for chat context) |
 | `OPENAI_API_KEY` | your key |
 | `CHAT_MODEL` | `gpt-4o-mini` (or your choice) |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` |

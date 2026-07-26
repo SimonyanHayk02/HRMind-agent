@@ -27,7 +27,7 @@ _HR_HINTS = re.compile(
     r"manager|salary|hired|hire|resume|skill|skills|developer|headcount|count|"
     r"how many|how much|python|kubernetes|aws|berlin|dubai|roster|profile|"
     r"who|about|tell me|find|search|list|show|names?|them|those|their|there|"
-    r"of them|say their|name them"
+    r"of them|of those|among them|name them|say their"
     r")\b",
     re.I,
 )

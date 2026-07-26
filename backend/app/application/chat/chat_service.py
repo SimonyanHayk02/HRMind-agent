@@ -4,8 +4,13 @@ from uuid import uuid4
 
 from app.api.schemas.chat import ChatRequest, ChatResponse
 from app.application.execution.langgraph_executor import LangGraphExecutor
+from app.application.memory.context_updates import (
+    extract_entities_from_state,
+    infer_constraints_from_question,
+)
 from app.application.memory.memory_service import MemoryService
 from app.application.memory.result_ids import extract_employee_ids_from_state
+from app.application.planning.heuristic_planner import refers_to_prior_set
 from app.application.planning.plan_compiler import PlanCompiler
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.planning.plan_validator import PlanValidator
@@ -56,8 +61,12 @@ class ChatService:
             )
         else:
             label = await self._embedding_router.route(body.question)
-            # Follow-ups referring to a prior result set are never chitchat.
-            if label == RouterLabel.CHITCHAT and session.last_employee_ids:
+            # Only promote chitchat→tools when the user clearly refers to a prior set.
+            if (
+                label == RouterLabel.CHITCHAT
+                and session.last_employee_ids
+                and refers_to_prior_set(body.question)
+            ):
                 label = RouterLabel.NEEDS_TOOLS
             if label == RouterLabel.CHITCHAT:
                 plan = ExecutionPlan(
@@ -76,9 +85,19 @@ class ChatService:
                 self._validator.validate(plan, auth)
 
         state = await self._executor.execute(plan, question=body.question, auth=auth)
+
         ids = extract_employee_ids_from_state(state)
         if ids:
             session = await self._memory.set_last_employee_ids(session, ids)
+
+        entities = extract_entities_from_state(state)
+        if entities:
+            session = await self._memory.upsert_entities(session, entities)
+
+        constraints = infer_constraints_from_question(body.question)
+        if constraints:
+            session = await self._memory.merge_constraints(session, constraints)
+
         answer, confidence, sources, clarify = await self._formatter.format(
             body.question, plan, state
         )

@@ -41,10 +41,12 @@ async def build_container(settings: Settings, *, use_fakes: bool = False) -> App
     redis: Redis | None = None
     cache: CachePort
     session_store: SessionStore
+    session_backend = "memory"
 
     if use_fakes:
         cache = MemoryCache()
         session_store = MemorySessionStore()
+        session_backend = "memory"
     else:
         try:
             redis = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -52,11 +54,18 @@ async def build_container(settings: Settings, *, use_fakes: bool = False) -> App
             cache = RedisCache(redis)
             from app.adapters.persistence.redis_session_store import RedisSessionStore
 
-            session_store = RedisSessionStore(redis)
-        except Exception:
+            session_store = RedisSessionStore(redis, ttl_seconds=settings.session_ttl_seconds)
+            session_backend = "redis"
+        except Exception as exc:
+            if settings.redis_required:
+                raise RuntimeError(
+                    f"Redis is required in app_env={settings.app_env!r} for durable chat sessions. "
+                    f"Connection failed: {exc}"
+                ) from exc
             cache = MemoryCache()
             session_store = MemorySessionStore()
             redis = None
+            session_backend = "memory"
 
     if use_fakes or not settings.openai_api_key:
         embeddings: EmbeddingClient = FakeEmbeddings(
@@ -88,6 +97,7 @@ async def build_container(settings: Settings, *, use_fakes: bool = False) -> App
         redis=redis,
         engine=engine,
         session_factory=session_factory,
+        extras={"session_backend": session_backend},
     )
     # Wire chat stack lazily-safe
     try:

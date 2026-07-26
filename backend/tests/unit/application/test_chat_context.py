@@ -113,6 +113,40 @@ async def test_redis_required_in_production_fails_loud(monkeypatch: pytest.Monke
 
 from app.application.memory.cohort import should_update_last_employee_ids
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
+from app.application.response.response_formatter import ResponseFormatter
+from app.adapters.llm.fake_llm import FakeLLM
+
+
+def test_formatter_rejects_spurious_headcount_for_vacation() -> None:
+    formatter = ResponseFormatter(FakeLLM())
+    plan = ExecutionPlan(
+        nodes=[PlanNode(id="sql1", kind="tool", name="sql", params={"mode": "constrained"})],
+        response_strategy="llm_format",
+    )
+    state = GraphState(
+        question="how much vacation are developers taking?",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "sql1": ToolResult(
+                data={
+                    "rows": [{"id": "1", "first_name": "A", "last_name": "B"}] * 20,
+                    "row_count": 100,
+                    "sql": "SELECT ... FROM employees e WHERE 1=1 LIMIT 200",
+                },
+                confidence=1.0,
+            )
+        },
+    )
+
+    async def _run():
+        return await formatter.format(
+            "how much vacation are developers taking?", plan, state
+        )
+
+    answer, conf, _, _ = asyncio.run(_run())
+    assert "don't have that information" in answer.lower()
+    assert "100" not in answer
+
 
 
 def test_cohort_rejects_unscoped_headcount() -> None:

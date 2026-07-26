@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
+from app.application.planning.unsupported import UNSUPPORTED_ANSWER, is_unsupported_topic
 from app.domain.session import SessionMemory
 
 _DEPARTMENTS = [
@@ -168,6 +169,14 @@ def try_heuristic_plan(
     if len(prior_ids) > 50:
         prior_ids = []
     anaphora = bool(prior_ids) and refers_to_prior_set(q)
+
+    # Out-of-schema topics (vacation, benefits, …) — do not invent via SQL
+    if is_unsupported_topic(q):
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question=UNSUPPORTED_ANSWER,
+        )
 
     # Follow-up: list names of the active result set
     if prior_ids and _FOLLOWUP_NAMES_RE.search(q):

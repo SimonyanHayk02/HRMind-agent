@@ -89,7 +89,13 @@ def test_skill_of_them_intersects_prior_ids() -> None:
     assert plan.nodes[2].params["other"] == ["00000000-0000-0000-0000-000000000001"]
 
 
-def test_developing_in_python_uses_resume_count() -> None:
+def test_vacation_is_unsupported() -> None:
+    plan = try_heuristic_plan("got it, so how much vacation are taking the developers?")
+    assert plan is not None
+    assert plan.nodes == []
+    assert plan.clarify_question is not None
+    assert "don't have that information" in plan.clarify_question.lower()
+
     plan = try_heuristic_plan("how much of them are developing in python ?")
     assert plan is not None
     assert plan.nodes[0].name == "resume_search"

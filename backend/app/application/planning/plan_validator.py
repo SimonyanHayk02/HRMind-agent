@@ -22,6 +22,8 @@ class PlanValidator:
 
     def validate(self, plan: ExecutionPlan, auth: AuthContext) -> None:
         if not plan.nodes:
+            if plan.clarify_question:
+                return
             raise PlanInvalidError("Plan has no nodes")
         if len(plan.nodes) > self._max_nodes:
             raise PlanInvalidError("Plan exceeds max nodes")

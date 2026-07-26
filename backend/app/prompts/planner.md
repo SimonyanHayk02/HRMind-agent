@@ -12,6 +12,7 @@ Rules:
 - Hybrid skill+date questions: resume_search -> extract_employee_ids -> sql(mode=constrained) -> count, response_strategy=template
 - Never invent employee facts; tools fetch data
 - Prefer sql mode=constrained with filters when employee_ids are known
+- If the user asks about vacation, PTO, leave, benefits, payroll, bonus, visa, or other data not in employees/resumes, return nodes=[] and set clarify_question to explain you do not have that information (do not run sql)
 - Conversation context is provided as recent_messages, last_employee_ids, constraints, entities, summary
 - If the user refers to "them/those/of them/that group" and last_employee_ids is non-empty, scope sql filters.employee_ids to that set (or intersect_ids after resume_search)
 - Apply active constraints (department/city/skill) when refining a prior result set

@@ -18,7 +18,15 @@ def test_rule_router_greeting() -> None:
     assert RuleRouter().route("thanks, say their names") is None
 
 
-def test_plan_validator_ok() -> None:
+def test_plan_validator_allows_clarify_only() -> None:
+    tools = ToolRegistry()
+    tools.register(GreetingTool())
+    ops = OperatorRegistry()
+    validator = PlanValidator(tools, ops)
+    plan = ExecutionPlan(nodes=[], clarify_question="I don't have that information.")
+    auth = AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER)
+    validator.validate(plan, auth)
+
     tools = ToolRegistry()
     tools.register(GreetingTool())
     ops = OperatorRegistry()

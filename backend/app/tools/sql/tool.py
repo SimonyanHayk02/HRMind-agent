@@ -67,8 +67,22 @@ class SqlTool:
         distinct = bool(params.get("distinct"))
         count_distinct = params.get("count_distinct")
         filters = dict(params.get("filters") or {})
-        if params.get("employee_ids"):
-            filters["employee_ids"] = params["employee_ids"]
+        if params.get("employee_ids") is not None:
+            raw = params.get("employee_ids")
+            if isinstance(raw, str):
+                raw = [raw]
+            if isinstance(raw, list):
+                cleaned = []
+                for x in raw:
+                    try:
+                        from uuid import UUID
+
+                        cleaned.append(str(UUID(str(x))))
+                    except Exception:
+                        continue
+                filters["employee_ids"] = cleaned
+            else:
+                filters["employee_ids"] = []
         sql, bind = self._builder.build(
             columns=cols,
             filters=filters,

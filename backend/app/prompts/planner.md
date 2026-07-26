@@ -13,6 +13,7 @@ Rules:
 - Hybrid skill+date questions: resume_search -> extract_employee_ids -> sql(mode=constrained) -> count, response_strategy=template
 - Never invent employee facts; tools fetch data
 - Prefer sql mode=constrained with filters when employee_ids are known
+- Never put non-UUID strings into filters.employee_ids. For roles like "software developers", filter position (e.g. Software Engineer) instead
 - If the user asks about vacation, PTO, leave, benefits, payroll, bonus, visa, or other data not in employees/resumes, return nodes=[] and set clarify_question to explain you do not have that information (do not run sql)
 - Conversation context is provided as recent_messages, last_employee_ids, last_focus, constraints, entities, summary, schema_catalog, query_state
 - schema_catalog lists filterable employee columns and allowed enum values — ONLY filter on those fields/values

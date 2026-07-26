@@ -29,6 +29,7 @@ class QueryBuilder:
         "employment_status",
         "position",
         "education",
+        "position_ilike",
     }
 
     ALLOWED_FACETS = frozenset(
@@ -73,17 +74,24 @@ class QueryBuilder:
 
         if "employee_ids" in filters:
             raw_ids = filters["employee_ids"] or []
-            ids = [str(UUID(str(x))) for x in raw_ids]
-            if not ids:
+            if not raw_ids:
                 # Empty ID list means "no matches" — never fall through to all rows.
                 sql += " AND 1=0"
             else:
-                placeholders = []
-                for i, eid in enumerate(ids):
-                    key = f"eid_{i}"
-                    placeholders.append(f"CAST(:{key} AS uuid)")
-                    params[key] = eid
-                sql += " AND e.id IN (" + ", ".join(placeholders) + ")"
+                ids: list[str] = []
+                for x in raw_ids:
+                    try:
+                        ids.append(str(UUID(str(x))))
+                    except Exception:
+                        continue
+                if ids:
+                    placeholders = []
+                    for i, eid in enumerate(ids):
+                        key = f"eid_{i}"
+                        placeholders.append(f"CAST(:{key} AS uuid)")
+                        params[key] = eid
+                    sql += " AND e.id IN (" + ", ".join(placeholders) + ")"
+                # If every provided id was invalid (LLM junk), ignore the filter.
         if "hire_date_gt" in filters:
             sql += " AND e.hire_date > :hire_date_gt"
             params["hire_date_gt"] = _as_date(filters["hire_date_gt"])
@@ -95,8 +103,24 @@ class QueryBuilder:
             params["hire_date_lt"] = _as_date(filters["hire_date_lt"])
         for col in ("department", "country", "city", "employment_status", "position", "education"):
             if col in filters and filters[col] is not None:
-                sql += f" AND e.{col} = :{col}"
-                params[col] = filters[col]
+                val = filters[col]
+                if isinstance(val, (list, tuple, set)):
+                    vals = [str(v) for v in val if v is not None and str(v).strip()]
+                    if not vals:
+                        sql += " AND 1=0"
+                    else:
+                        placeholders = []
+                        for i, item in enumerate(vals):
+                            key = f"{col}_{i}"
+                            placeholders.append(f":{key}")
+                            params[key] = item
+                        sql += f" AND e.{col} IN (" + ", ".join(placeholders) + ")"
+                else:
+                    sql += f" AND e.{col} = :{col}"
+                    params[col] = val
+        if filters.get("position_ilike"):
+            sql += " AND e.position ILIKE :position_ilike"
+            params["position_ilike"] = str(filters["position_ilike"])
 
         if not count_only and count_distinct is None:
             if distinct and columns:

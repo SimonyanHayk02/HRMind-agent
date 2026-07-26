@@ -36,7 +36,38 @@ def test_extract_united_states_alias() -> None:
     assert any(f.field == "country" and f.value == "USA" for f in state.filters)
 
 
-def test_org_headcount_then_of_them_uses_universe() -> None:
+def test_list_software_developers() -> None:
+    catalog = default_employee_catalog()
+    state = extract_query_state(
+        "can you list me the software developers?", catalog=catalog
+    )
+    assert state.intent == "list"
+    assert any(f.field == "position" for f in state.filters)
+    plan = plan_from_query_state(state)
+    assert plan is not None
+    filters = plan.nodes[0].params["filters"]
+    assert filters.get("position") == "Software Engineer" or (
+        isinstance(filters.get("position"), list)
+        and "Software Engineer" in filters["position"]
+    )
+
+
+def test_query_builder_ignores_invalid_uuids() -> None:
+    from app.adapters.sql.query_builder import QueryBuilder
+
+    sql, params = QueryBuilder().build(
+        columns=["id", "first_name"],
+        filters={
+            "employee_ids": ["not-a-uuid", "also-bad"],
+            "position": "Software Engineer",
+        },
+    )
+    assert "eid_" not in sql
+    assert "Software Engineer" in params.values() or any(
+        v == "Software Engineer" for v in params.values()
+    )
+    assert "1=0" not in sql
+
     catalog = default_employee_catalog()
     memory = SessionMemory(
         session_id="s",

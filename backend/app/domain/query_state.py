@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class FilterSlot(BaseModel):
     field: str
-    op: Literal["eq", "contains", "gt", "gte", "lt", "lte"] = "eq"
+    op: Literal["eq", "in", "contains", "gt", "gte", "lt", "lte"] = "eq"
     value: Any
     confidence: float = 1.0
 
@@ -42,6 +42,8 @@ class QueryState(BaseModel):
         for f in self.filters:
             if f.op == "eq":
                 out[f.field] = f.value
+            elif f.op == "in":
+                out[f.field] = list(f.value) if not isinstance(f.value, list) else f.value
             elif f.op == "gt" and f.field == "hire_date":
                 out["hire_date_gt"] = f.value
             elif f.op == "gte" and f.field == "hire_date":

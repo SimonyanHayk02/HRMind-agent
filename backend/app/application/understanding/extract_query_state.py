@@ -38,6 +38,28 @@ _ABOUT_RE = re.compile(
 )
 _YEAR_RE = re.compile(r"(?:after|since)\s+(20\d{2})", re.I)
 
+# Natural job-role phrases → one or more concrete position titles in the DB.
+_ROLE_PHRASES: list[tuple[str, list[str]]] = [
+    ("software developers", ["Software Engineer"]),
+    ("software developer", ["Software Engineer"]),
+    ("software engineers", ["Software Engineer"]),
+    ("software engineer", ["Software Engineer"]),
+    ("senior engineers", ["Senior Engineer"]),
+    ("senior engineer", ["Senior Engineer"]),
+    ("staff engineers", ["Staff Engineer"]),
+    ("staff engineer", ["Staff Engineer"]),
+    ("engineering managers", ["Engineering Manager"]),
+    ("engineering manager", ["Engineering Manager"]),
+    ("product managers", ["Product Manager"]),
+    ("product manager", ["Product Manager"]),
+    ("product designers", ["Product Designer"]),
+    ("product designer", ["Product Designer"]),
+    ("developers", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
+    ("developer", ["Software Engineer"]),
+    ("engineers", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
+    ("engineer", ["Software Engineer", "Senior Engineer", "Staff Engineer"]),
+]
+
 _FACET_WORD = {
     "countries": "country",
     "country": "country",
@@ -117,11 +139,11 @@ def extract_query_state(
             return state
 
     if is_list_followup(q) or (
-        any(w in lower for w in ("list", "show", "who are", "names"))
+        any(w in lower for w in ("list", "show", "who are", "names", "can you list"))
         and not state.want_count
     ):
         state.intent = "list"
-        state.confidence = 0.8 if state.filters or state.refers_to_prior else 0.55
+        state.confidence = 0.85 if state.filters or state.refers_to_prior else 0.55
         return _merge_prior_filters(state, memory)
 
     if state.want_count or (
@@ -168,10 +190,26 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
     found: list[FilterSlot] = []
     used_fields: set[str] = set()
 
+    # Role phrases first (developers / software engineers → position IN (...))
+    for phrase, positions in sorted(_ROLE_PHRASES, key=lambda x: len(x[0]), reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", lower):
+            if len(positions) == 1:
+                found.append(
+                    FilterSlot(field="position", op="eq", value=positions[0], confidence=0.92)
+                )
+            else:
+                found.append(
+                    FilterSlot(field="position", op="in", value=list(positions), confidence=0.9)
+                )
+            used_fields.add("position")
+            break
+
     # Longer values first so "New York" wins over "York" if present
     candidates: list[tuple[str, str, str, float]] = []  # field, canonical, matched, conf
     for col in catalog.filterable_columns():
         if col.kind != "enum":
+            continue
+        if col.name in used_fields:
             continue
         variants: list[tuple[str, str]] = []
         for v in col.values:

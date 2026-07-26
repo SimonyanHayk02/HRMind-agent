@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
+from app.domain.session import SessionMemory
 
 _DEPARTMENTS = [
     "Engineering",
@@ -26,6 +27,16 @@ _SKILL_INTENT_RE = re.compile(
     re.I,
 )
 _COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+_FOLLOWUP_NAMES_RE = re.compile(
+    r"\b("
+    r"their names?|the names?|there names?|"  # include common typo "there"
+    r"who are (they|those|them)|"
+    r"list (them|those|their names?)|"
+    r"say (their|there|the) names?|"
+    r"name them|show (me )?them|what are (their|there) names?"
+    r")\b",
+    re.I,
+)
 
 
 def _resume_search_plan(question: str, *, count_only: bool = False, hire_date_gt: str | None = None) -> ExecutionPlan:
@@ -68,10 +79,33 @@ def _resume_search_plan(question: str, *, count_only: bool = False, hire_date_gt
     return ExecutionPlan(nodes=nodes, response_strategy="llm_format")
 
 
-def try_heuristic_plan(question: str) -> ExecutionPlan | None:
+def try_heuristic_plan(
+    question: str,
+    *,
+    memory: SessionMemory | None = None,
+) -> ExecutionPlan | None:
     """Deterministic plans for common HR questions (works without OpenAI)."""
     q = question.strip()
     lower = q.lower()
+
+    # Follow-up: "please say their names" after a prior skill/SQL result set
+    if memory and memory.last_employee_ids and _FOLLOWUP_NAMES_RE.search(q):
+        return ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "count_only": False,
+                        "filters": {"employee_ids": list(memory.last_employee_ids)},
+                        "columns": ["id", "first_name", "last_name", "department", "position"],
+                    },
+                )
+            ],
+            response_strategy="template",
+        )
 
     # Count by department: "How many employees work in Engineering?"
     for dept in _DEPARTMENTS:

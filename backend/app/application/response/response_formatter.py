@@ -64,6 +64,10 @@ class ResponseFormatter:
                     return f"The answer is {p['count']}.", confidence, sources, None
                 if isinstance(p, dict) and "row_count" in p and "rows" not in p:
                     return f"The answer is {p['row_count']}.", confidence, sources, None
+                if isinstance(p, dict) and isinstance(p.get("rows"), list):
+                    named = _format_employee_rows(p["rows"])
+                    if named:
+                        return named, confidence, sources, None
             if tool_errors:
                 detail = "; ".join(tool_errors)
                 return (
@@ -93,3 +97,25 @@ class ResponseFormatter:
                 return json.dumps(payloads[-1], default=str), confidence, sources, None
             return "I could not find matching data.", confidence, sources, None
         return answer, confidence, sources, None
+
+
+def _format_employee_rows(rows: list[Any]) -> str | None:
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        first = str(row.get("first_name") or "").strip()
+        last = str(row.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        if not full:
+            continue
+        dept = str(row.get("department") or "").strip()
+        pos = str(row.get("position") or "").strip()
+        extra = ", ".join(x for x in (pos, dept) if x)
+        names.append(f"{full} ({extra})" if extra else full)
+    if not names:
+        return None
+    if len(names) == 1:
+        return f"The matching employee is {names[0]}."
+    bullet = "\n".join(f"- {n}" for n in names)
+    return f"Here are the {len(names)} matching employees:\n{bullet}"

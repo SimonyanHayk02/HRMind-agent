@@ -62,6 +62,20 @@ class MemoryService:
         session.constraint_memory.extend(constraints)
         await self._store.save(session)
 
+    async def set_last_employee_ids(self, session: SessionMemory, employee_ids: list[str]) -> SessionMemory:
+        # Dedupe, preserve order
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for eid in employee_ids:
+            s = str(eid)
+            if s and s not in seen:
+                seen.add(s)
+                ordered.append(s)
+        session.last_employee_ids = ordered
+        session.updated_at = datetime.now(UTC)
+        await self._store.save(session)
+        return session
+
     async def _maybe_summarize(self, session: SessionMemory) -> SessionMemory:
         if len(session.messages) > self._summary_trigger and self._summarizer is not None:
             older = session.messages[: -self._max_history // 2]

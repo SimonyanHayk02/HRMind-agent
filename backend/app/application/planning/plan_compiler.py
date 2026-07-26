@@ -33,7 +33,7 @@ class PlanCompiler:
         auth: AuthContext,
         memory: SessionMemory | None = None,
     ) -> ExecutionPlan:
-        heuristic = try_heuristic_plan(question)
+        heuristic = try_heuristic_plan(question, memory=memory)
         if heuristic is not None:
             return heuristic
 

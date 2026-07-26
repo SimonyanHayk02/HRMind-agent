@@ -53,9 +53,16 @@ class SqlTool:
         return await self._nl2sql(params, auth=auth)
 
     async def _constrained(self, params: dict[str, Any], *, auth: AuthContext) -> ToolResult:
-        cols = sorted(
-            allowed_columns(auth.role, department=auth.department_id, target_department=auth.department_id)
+        allowed = allowed_columns(
+            auth.role, department=auth.department_id, target_department=auth.department_id
         )
+        requested = params.get("columns")
+        if requested:
+            cols = [c for c in requested if c in allowed]
+            if not cols:
+                cols = sorted(allowed)
+        else:
+            cols = sorted(allowed)
         count_only = bool(params.get("count_only"))
         filters = dict(params.get("filters") or {})
         if params.get("employee_ids"):

@@ -37,4 +37,6 @@ class SessionMemory(BaseModel):
     summary: str = ""
     entity_memory: list[EntityRef] = Field(default_factory=list)
     constraint_memory: list[ConstraintRef] = Field(default_factory=list)
+    # Last employee ID set from resume/SQL tools — used for follow-ups like "say their names".
+    last_employee_ids: list[str] = Field(default_factory=list)
     updated_at: datetime | None = None

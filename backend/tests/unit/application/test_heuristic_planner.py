@@ -68,18 +68,20 @@ def test_of_them_count_uses_prior_ids() -> None:
     memory = _memory_with_ids("00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002")
     plan = try_heuristic_plan("how many of them?", memory=memory)
     assert plan is not None
-    assert plan.nodes[0].params["count_only"] is True
-    assert len(plan.nodes[0].params["filters"]["employee_ids"]) == 2
+    assert plan.active_cohort_node == "cohort"
+    assert plan.nodes[-1].params["count_only"] is True
+    assert len(plan.nodes[-1].params["filters"]["employee_ids"]) == 2
 
 
 def test_of_them_in_berlin_filters_prior_ids() -> None:
     memory = _memory_with_ids("00000000-0000-0000-0000-000000000001")
     plan = try_heuristic_plan("how many of them in Berlin", memory=memory)
     assert plan is not None
-    filters = plan.nodes[0].params["filters"]
+    assert plan.active_cohort_node == "cohort"
+    filters = plan.nodes[-1].params["filters"]
     assert filters["city"] == "Berlin"
     assert filters["employee_ids"] == ["00000000-0000-0000-0000-000000000001"]
-    assert plan.nodes[0].params["count_only"] is True
+    assert plan.nodes[-1].params["count_only"] is True
 
 
 def test_skill_of_them_intersects_prior_ids() -> None:
@@ -206,9 +208,28 @@ def test_names_please_without_context_clarifies() -> None:
     assert "which names" in plan.clarify_question.lower()
 
 
-def test_refers_to_prior_set_includes_names_please() -> None:
-    assert refers_to_prior_set("names please")
-    assert refers_to_prior_set("how many of them?")
-    assert refers_to_prior_set("please say their names")
-    assert not refers_to_prior_set("how are you")
+def test_list_engineering_uses_department_list_plan() -> None:
+    plan = try_heuristic_plan("List employees in Engineering")
+    assert plan is not None
+    assert plan.nodes[0].name == "sql"
+    assert plan.nodes[0].params["filters"]["department"] == "Engineering"
+    assert plan.nodes[0].params["count_only"] is False
+    assert plan.active_cohort_node == "sql1"
+
+
+def test_manager_of_alice_passes_name() -> None:
+    plan = try_heuristic_plan("Who is the manager of Alice Nguyen?")
+    assert plan is not None
+    assert plan.nodes[0].name == "employee"
+    assert plan.nodes[0].params["action"] == "manager"
+    assert plan.nodes[0].params["name"] == "Alice Nguyen"
+    assert plan.response_strategy == "template"
+
+
+def test_extract_manager_subject() -> None:
+    from app.tools.employee.tool import extract_manager_subject
+
+    assert extract_manager_subject("Who is the manager of Alice Nguyen?") == "Alice Nguyen"
+    assert extract_manager_subject("Who manages Grace Mueller?") == "Grace Mueller"
+    assert extract_manager_subject("Alice Nguyen's manager") == "Alice Nguyen"
 

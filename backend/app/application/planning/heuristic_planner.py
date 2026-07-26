@@ -6,6 +6,7 @@ from app.application.memory.context_updates import filters_from_constraint_memor
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.planning.unsupported import UNSUPPORTED_ANSWER, is_unsupported_topic
 from app.domain.session import SessionMemory
+from app.tools.employee.tool import extract_manager_subject
 
 _DEPARTMENTS = [
     "Engineering",
@@ -92,6 +93,7 @@ _CITY_RE = re.compile(r"\b(?:in|from)\s+(Berlin|Dubai|London|Paris|New York)\b",
 _PERSON_LOCATION_RE = re.compile(
     r"\bwhere\s+(?:(?:does|do|is)\s+)?(?:the\s+)?"
     r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)"
+    r"(?:\s+in\s+[A-Za-z]+)?"
     r"\s+(?:live|lives|living|located|from|based)\b",
     re.I,
 )
@@ -101,7 +103,22 @@ _ABOUT_PERSON_RE = re.compile(
     re.I,
 )
 
+_DEPT_IN_TEXT_RE = re.compile(
+    r"\b(?:in|from)\s+(Engineering|People|Sales|Finance|Product|Operations)\b",
+    re.I,
+)
+_LIST_DEPT_RE = re.compile(
+    r"\b(list|show|who|employees?|people|staff)\b",
+    re.I,
+)
+
 _NAME_COLUMNS = ["id", "first_name", "last_name", "department", "position"]
+
+
+def _dept_hint(question: str) -> str | None:
+    m = _DEPT_IN_TEXT_RE.search(question)
+    return m.group(1) if m else None
+
 
 _FACET_WORD_TO_COL = {
     "countries": "country",
@@ -184,17 +201,33 @@ def _facet_list_plan(dimension: str) -> ExecutionPlan:
     )
 
 
-def _employee_by_name_plan(name: str) -> ExecutionPlan:
+def _employee_by_name_plan(name: str, *, department: str | None = None) -> ExecutionPlan:
+    params: dict = {"action": "by_name", "name": name.strip()}
+    if department:
+        params["department"] = department
     return ExecutionPlan(
         nodes=[
             PlanNode(
                 id="e1",
                 kind="tool",
                 name="employee",
-                params={"action": "by_name", "name": name.strip()},
+                params=params,
             )
         ],
-        response_strategy="llm_format",
+        response_strategy="template",
+        active_cohort_node="e1",
+    )
+
+
+def _manager_plan(question: str, *, name: str | None = None) -> ExecutionPlan:
+    params: dict = {"action": "manager", "question": question}
+    if name:
+        params["name"] = name
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(id="e1", kind="tool", name="employee", params=params),
+        ],
+        response_strategy="template",
         active_cohort_node="e1",
     )
 
@@ -238,13 +271,42 @@ def _sql_over_ids(
     filters: dict = {"employee_ids": list(employee_ids)}
     if extra_filters:
         filters.update(extra_filters)
+    # Count refinements still materialize the filtered ID set so "names please"
+    # follows the refined cohort, not the previous broader one.
+    if count_only:
+        return ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="cohort",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "count_only": False,
+                        "filters": filters,
+                        "columns": ["id"],
+                    },
+                ),
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "count_only": True,
+                        "filters": filters,
+                    },
+                ),
+            ],
+            response_strategy="template",
+            active_cohort_node="cohort",
+        )
     params: dict = {
         "mode": "constrained",
-        "count_only": count_only,
+        "count_only": False,
         "filters": filters,
+        "columns": columns or _NAME_COLUMNS,
     }
-    if not count_only:
-        params["columns"] = columns or _NAME_COLUMNS
     return ExecutionPlan(
         nodes=[
             PlanNode(id="sql1", kind="tool", name="sql", params=params),
@@ -278,6 +340,58 @@ def _department_count_plan(dept: str) -> ExecutionPlan:
                     "mode": "constrained",
                     "count_only": True,
                     "filters": filters,
+                },
+            ),
+        ],
+        response_strategy="template",
+        active_cohort_node="cohort",
+    )
+
+
+def _department_list_plan(dept: str) -> ExecutionPlan:
+    filters = {"department": dept}
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_only": False,
+                    "filters": filters,
+                    "columns": _NAME_COLUMNS + ["city", "country"],
+                },
+            )
+        ],
+        response_strategy="template",
+        active_cohort_node="sql1",
+    )
+
+
+def _filtered_count_plan(filters: dict) -> ExecutionPlan:
+    """Attribute-filtered count that also materializes the matching cohort."""
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="cohort",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_only": False,
+                    "filters": dict(filters),
+                    "columns": ["id"],
+                },
+            ),
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_only": True,
+                    "filters": dict(filters),
                 },
             ),
         ],
@@ -398,17 +512,23 @@ def try_heuristic_plan(
 
     # Named person from prior result set ("where ivy chen lives?")
     entity_name = _match_entity_name(q, memory)
+    dept_hint = _dept_hint(q)
     if entity_name and (
         _PERSON_LOCATION_RE.search(q)
         or any(w in lower for w in ("live", "lives", "living", "located", "city", "country", "based"))
         or _ABOUT_PERSON_RE.search(q)
     ):
-        return _employee_by_name_plan(entity_name)
+        return _employee_by_name_plan(entity_name, department=dept_hint)
 
     # "where does Ivy Chen live?" / "where the ivy chen lives"
     loc = _PERSON_LOCATION_RE.search(q)
     if loc:
-        return _employee_by_name_plan(loc.group(1))
+        return _employee_by_name_plan(loc.group(1), department=dept_hint)
+
+    # Manager lookup (before generic analytics)
+    mgr_name = extract_manager_subject(q)
+    if mgr_name or re.search(r"\b(manager of|'s manager|who manages)\b", lower):
+        return _manager_plan(q, name=mgr_name or entity_name)
 
     focus = memory.last_focus if memory else None
 
@@ -462,24 +582,31 @@ def try_heuristic_plan(
     if anaphora and _COUNT_RE.search(q) and not _SKILL_RE.search(q):
         return _sql_over_ids(prior_ids, count_only=True)
 
-    # Constraint-only follow-up count (e.g. Engineering count → "how many of them?")
-    if scoped_followup and not prior_ids and _COUNT_RE.search(q) and not _SKILL_RE.search(q):
-        return ExecutionPlan(
-            nodes=[
-                PlanNode(
-                    id="sql1",
-                    kind="tool",
-                    name="sql",
-                    params={
-                        "mode": "constrained",
-                        "count_only": True,
-                        "filters": dict(scope_filters),
-                    },
-                )
-            ],
-            response_strategy="template",
-            active_cohort_node="sql1",
-        )
+    # Constraint-only follow-up with optional city refine
+    if scoped_followup and not prior_ids and not _SKILL_RE.search(q):
+        filters = dict(scope_filters)
+        if city_match:
+            filters["city"] = city_match.group(1)
+        if filters and (_COUNT_RE.search(q) or city_match or is_list_followup(q)):
+            if _COUNT_RE.search(q) or (city_match and not is_list_followup(q)):
+                return _filtered_count_plan(filters)
+            return ExecutionPlan(
+                nodes=[
+                    PlanNode(
+                        id="sql1",
+                        kind="tool",
+                        name="sql",
+                        params={
+                            "mode": "constrained",
+                            "count_only": False,
+                            "filters": filters,
+                            "columns": _NAME_COLUMNS,
+                        },
+                    )
+                ],
+                response_strategy="template",
+                active_cohort_node="sql1",
+            )
 
     # Count by department (global) — also materialize cohort IDs
     if not scoped_followup:
@@ -488,6 +615,14 @@ def try_heuristic_plan(
                 w in lower for w in ("how many", "count", "number of")
             ):
                 return _department_count_plan(dept)
+
+    # List employees by department (global) — materialize names + IDs
+    if not scoped_followup and _LIST_DEPT_RE.search(q):
+        for dept in _DEPARTMENTS:
+            if dept.lower() in lower and not any(
+                w in lower for w in ("how many", "count", "number of", "different")
+            ):
+                return _department_list_plan(dept)
 
     # List/filter by city (global)
     if city_match and not scoped_followup and any(
@@ -528,24 +663,10 @@ def try_heuristic_plan(
             scope_filters=filters,
         )
 
-    # Manager lookup
-    if "manager" in lower:
-        return ExecutionPlan(
-            nodes=[
-                PlanNode(
-                    id="e1",
-                    kind="tool",
-                    name="employee",
-                    params={"action": "manager", "question": q},
-                )
-            ],
-            response_strategy="llm_format",
-        )
-
     # "Tell me about Bob" / "Who is Alice Nguyen?"
     about = _ABOUT_PERSON_RE.search(q)
     if about:
-        return _employee_by_name_plan(about.group(1))
+        return _employee_by_name_plan(about.group(1), department=dept_hint)
 
     # Generic structured employee analytics
     if any(

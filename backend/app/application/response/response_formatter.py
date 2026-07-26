@@ -55,6 +55,15 @@ class ResponseFormatter:
                 if result.data and isinstance(result.data, dict) and result.data.get("answer"):
                     if plan.response_strategy == "template" or node.name == "greeting":
                         return str(result.data["answer"]), result.confidence, sources, None
+                # Prefer deterministic employee/manager formatting over raw JSON / LLM
+                if (
+                    result.data
+                    and isinstance(result.data, dict)
+                    and node.name == "employee"
+                ):
+                    pretty = _format_employee_tool_payload(result.data, question)
+                    if pretty:
+                        return pretty, result.confidence, sources, None
             elif result is not None:
                 payloads.append(result)
 
@@ -126,6 +135,10 @@ class ResponseFormatter:
                     named = _format_employee_rows(p["rows"])
                     if named:
                         return named, confidence, sources, None
+                if isinstance(p, dict):
+                    pretty = _format_employee_tool_payload(p, question)
+                    if pretty:
+                        return pretty, confidence, sources, None
             if tool_errors:
                 detail = "; ".join(tool_errors)
                 return (
@@ -154,6 +167,11 @@ class ResponseFormatter:
                 "don't have that information."
             )
         )
+        for p in payloads:
+            if isinstance(p, dict):
+                pretty = _format_employee_tool_payload(p, question)
+                if pretty:
+                    return pretty, confidence, sources, None
         user = json.dumps({"question": question, "results": payloads}, default=str)
         answer = await self._llm.complete(system=system, user=user, temperature=0.0)
         if not answer or answer.strip().lower() in {"null", "none"}:
@@ -265,6 +283,88 @@ def _is_spurious_headcount_answer(answer: str, question: str, payloads: list[Any
         if any(_looks_unscoped_dump(p) for p in payloads):
             return True
     return False
+
+
+def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | None:
+    """Human answers for employee tool profile / manager / roster payloads."""
+    if data.get("clarify"):
+        return str(data["clarify"])
+
+    # Manager chain
+    if "employee" in data and "managers" in data:
+        emp = data.get("employee") or {}
+        managers = data.get("managers") or []
+        emp_name = _person_label(emp)
+        if not managers:
+            return f"{emp_name} has no manager on file." if emp_name else "No manager on file."
+        mgr = managers[0] if isinstance(managers, list) and managers else None
+        if not isinstance(mgr, dict):
+            return None
+        mgr_name = _person_label(mgr)
+        extra = ", ".join(
+            x for x in (mgr.get("position"), mgr.get("department"), mgr.get("city")) if x
+        )
+        if extra:
+            return f"{emp_name}'s manager is {mgr_name} ({extra})."
+        return f"{emp_name}'s manager is {mgr_name}."
+
+    # Department roster
+    if isinstance(data.get("employees"), list) and data["employees"]:
+        rows = data["employees"]
+        if all(isinstance(r, dict) for r in rows):
+            # Map to row formatter fields
+            mapped = []
+            for r in rows:
+                mapped.append(
+                    {
+                        "first_name": r.get("first_name") or "",
+                        "last_name": r.get("last_name") or "",
+                        "department": r.get("department") or "",
+                        "position": r.get("position") or "",
+                        "id": r.get("id"),
+                    }
+                )
+            return _format_employee_rows(mapped)
+
+    # Single profile
+    if data.get("full_name") or (data.get("first_name") and data.get("id")):
+        name = _person_label(data)
+        q = (question or "").lower()
+        if any(w in q for w in ("live", "lives", "living", "located", "where", "city", "based")):
+            city = data.get("city")
+            country = data.get("country")
+            loc = ", ".join(x for x in (city, country) if x)
+            if loc:
+                return f"{name} lives in {loc}."
+            return f"I don't have a location on file for {name}."
+        bits = [name]
+        for label, key in (
+            ("Position", "position"),
+            ("Department", "department"),
+            ("Location", None),
+            ("Email", "email"),
+            ("Status", "employment_status"),
+        ):
+            if key is None:
+                loc = ", ".join(x for x in (data.get("city"), data.get("country")) if x)
+                if loc:
+                    bits.append(f"Location: {loc}")
+                continue
+            val = data.get(key)
+            if val:
+                bits.append(f"{label}: {val}")
+        return "\n".join(bits) if len(bits) > 1 else name
+    return None
+
+
+def _person_label(row: dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        return "Unknown"
+    if row.get("full_name"):
+        return str(row["full_name"])
+    first = str(row.get("first_name") or "").strip()
+    last = str(row.get("last_name") or "").strip()
+    return f"{first} {last}".strip() or "Unknown"
 
 
 def _format_employee_rows(rows: list[Any]) -> str | None:

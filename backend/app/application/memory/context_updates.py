@@ -96,6 +96,33 @@ def extract_entities_from_state(state: GraphState) -> list[EntityRef]:
                 name = str(hit.get("employee_name") or "").strip() or str(eid)
                 entities.append(EntityRef(employee_id=eid, display_name=name, confidence=0.8))
 
+        # Employee tool profile / candidates / nested employee
+        people: list[dict] = []
+        if data.get("id") and (data.get("full_name") or data.get("first_name")):
+            people.append(data)
+        if isinstance(data.get("employee"), dict):
+            people.append(data["employee"])
+        if isinstance(data.get("candidates"), list):
+            people.extend(x for x in data["candidates"] if isinstance(x, dict))
+        if isinstance(data.get("employees"), list):
+            people.extend(x for x in data["employees"] if isinstance(x, dict))
+        for person in people:
+            if not person.get("id"):
+                continue
+            try:
+                eid = UUID(str(person["id"]))
+            except Exception:
+                continue
+            if eid in seen:
+                continue
+            seen.add(eid)
+            name = str(person.get("full_name") or "").strip()
+            if not name:
+                first = str(person.get("first_name") or "").strip()
+                last = str(person.get("last_name") or "").strip()
+                name = f"{first} {last}".strip() or str(eid)
+            entities.append(EntityRef(employee_id=eid, display_name=name, confidence=0.9))
+
     return entities
 
 

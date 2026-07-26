@@ -112,6 +112,14 @@ def _from_value(value: Any) -> list[str]:
         if "employees" in value and isinstance(value["employees"], list):
             for row in value["employees"]:
                 out.extend(_from_value(row))
+        if "employee" in value and isinstance(value["employee"], dict):
+            out.extend(_from_value(value["employee"]))
+        if "candidates" in value and isinstance(value["candidates"], list):
+            for row in value["candidates"]:
+                out.extend(_from_value(row))
+        if "managers" in value and isinstance(value["managers"], list):
+            for row in value["managers"]:
+                out.extend(_from_value(row))
         return out
     return []
 

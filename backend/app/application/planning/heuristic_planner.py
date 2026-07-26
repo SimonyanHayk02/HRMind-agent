@@ -13,6 +13,60 @@ _DEPARTMENTS = [
     "Operations",
 ]
 
+# Keep in sync with scripts/generate_resumes.py SKILLS (+ common cloud terms).
+_SKILLS = (
+    "Python|Java|Go|React|Kubernetes|NLP|Machine Learning|SQL|"
+    "AWS|Docker|Salesforce|Recruiting|Accounting|Product Strategy"
+)
+
+_SKILL_RE = re.compile(rf"\b({_SKILLS})\b", re.I)
+_SKILL_INTENT_RE = re.compile(
+    r"\b(knows?|knowing|experience|experienced|skill|skills|proficient|"
+    r"familiar|resume|developer|find|search|with)\b",
+    re.I,
+)
+_COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+
+
+def _resume_search_plan(question: str, *, count_only: bool = False, hire_date_gt: str | None = None) -> ExecutionPlan:
+    nodes = [
+        PlanNode(
+            id="r1",
+            kind="tool",
+            name="resume_search",
+            params={"question": question},
+        )
+    ]
+    if count_only or hire_date_gt:
+        nodes.append(
+            PlanNode(
+                id="ids",
+                kind="operator",
+                name="extract_employee_ids",
+                depends_on=["r1"],
+                input_bindings={"data": "nodes.r1"},
+            )
+        )
+        filters: dict = {}
+        if hire_date_gt:
+            filters["hire_date_gt"] = hire_date_gt
+        nodes.append(
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                depends_on=["ids"],
+                params={
+                    "mode": "constrained",
+                    "count_only": True,
+                    "filters": filters,
+                },
+                input_bindings={"employee_ids": "nodes.ids"},
+            )
+        )
+        return ExecutionPlan(nodes=nodes, response_strategy="template")
+    return ExecutionPlan(nodes=nodes, response_strategy="llm_format")
+
 
 def try_heuristic_plan(question: str) -> ExecutionPlan | None:
     """Deterministic plans for common HR questions (works without OpenAI)."""
@@ -61,56 +115,16 @@ def try_heuristic_plan(question: str) -> ExecutionPlan | None:
             response_strategy="llm_format",
         )
 
-    # Resume / skills search
-    skill_match = re.search(
-        r"\b(Python|Java|Go|React|Kubernetes|NLP|Machine Learning|SQL)\b", q, re.I
-    )
-    if skill_match and any(
-        w in lower for w in ("resume", "skill", "developer", "find", "search", "who has")
-    ):
-        # Hybrid count after year
+    # Resume / skills search — must run before generic SQL ("employees" + "how many")
+    skill_match = _SKILL_RE.search(q)
+    if skill_match and _SKILL_INTENT_RE.search(q):
         year_match = re.search(r"(?:after|since)\s+(20\d{2})", lower)
-        if year_match and any(w in lower for w in ("how many", "count")):
-            return ExecutionPlan(
-                nodes=[
-                    PlanNode(
-                        id="r1",
-                        kind="tool",
-                        name="resume_search",
-                        params={"question": q},
-                    ),
-                    PlanNode(
-                        id="ids",
-                        kind="operator",
-                        name="extract_employee_ids",
-                        depends_on=["r1"],
-                        input_bindings={"data": "nodes.r1"},
-                    ),
-                    PlanNode(
-                        id="sql1",
-                        kind="tool",
-                        name="sql",
-                        depends_on=["ids"],
-                        params={
-                            "mode": "constrained",
-                            "count_only": True,
-                            "filters": {"hire_date_gt": f"{year_match.group(1)}-01-01"},
-                        },
-                        input_bindings={"employee_ids": "nodes.ids"},
-                    ),
-                ],
-                response_strategy="template",
-            )
-        return ExecutionPlan(
-            nodes=[
-                PlanNode(
-                    id="r1",
-                    kind="tool",
-                    name="resume_search",
-                    params={"question": q},
-                )
-            ],
-            response_strategy="llm_format",
+        count_only = bool(_COUNT_RE.search(q))
+        hire_date_gt = f"{year_match.group(1)}-01-01" if year_match and count_only else None
+        return _resume_search_plan(
+            q,
+            count_only=count_only and not hire_date_gt,
+            hire_date_gt=hire_date_gt,
         )
 
     # Manager lookup

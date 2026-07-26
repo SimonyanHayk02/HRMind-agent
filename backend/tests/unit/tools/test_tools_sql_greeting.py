@@ -29,6 +29,16 @@ def test_query_builder_ids() -> None:
     assert "hire_date_gt" in params
 
 
+def test_query_builder_empty_employee_ids_matches_nothing() -> None:
+    sql, params = QueryBuilder().build(
+        columns=["id"],
+        filters={"employee_ids": []},
+        count_only=True,
+    )
+    assert "1=0" in sql
+    assert "eid_0" not in params
+
+
 def test_sql_validator_rejects_drop() -> None:
     auth = AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER)
     with pytest.raises(ValidationFailedError):

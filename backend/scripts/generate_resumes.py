@@ -26,6 +26,8 @@ SKILLS = [
     "React",
     "Machine Learning",
     "NLP",
+    "AWS",
+    "Docker",
     "Recruiting",
     "Salesforce",
     "Accounting",

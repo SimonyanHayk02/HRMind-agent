@@ -46,9 +46,13 @@ class QueryBuilder:
         sql = f"SELECT {select_cols} FROM employees e WHERE 1=1"
         params: dict[str, Any] = {}
 
-        if "employee_ids" in filters and filters["employee_ids"]:
-            ids = [str(UUID(str(x))) for x in filters["employee_ids"]]
-            if ids:
+        if "employee_ids" in filters:
+            raw_ids = filters["employee_ids"] or []
+            ids = [str(UUID(str(x))) for x in raw_ids]
+            if not ids:
+                # Empty ID list means "no matches" — never fall through to all rows.
+                sql += " AND 1=0"
+            else:
                 placeholders = []
                 for i, eid in enumerate(ids):
                     key = f"eid_{i}"

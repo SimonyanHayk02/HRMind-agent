@@ -7,6 +7,7 @@ from app.application.execution.langgraph_executor import LangGraphExecutor
 from app.application.memory.cohort import should_update_last_employee_ids
 from app.application.memory.context_updates import (
     extract_entities_from_state,
+    extract_last_focus,
     infer_constraints_from_question,
 )
 from app.application.memory.memory_service import MemoryService
@@ -65,10 +66,15 @@ class ChatService:
             )
         else:
             label = await self._embedding_router.route(body.question)
-            # Only promote chitchat→tools when the user clearly refers to a prior set.
+            # Promote chitchat→tools for short follow-ups with any saved context.
+            has_context = bool(
+                session.last_employee_ids
+                or session.last_focus
+                or session.constraint_memory
+            )
             if (
                 label == RouterLabel.CHITCHAT
-                and session.last_employee_ids
+                and has_context
                 and refers_to_prior_set(body.question)
             ):
                 label = RouterLabel.NEEDS_TOOLS
@@ -96,13 +102,19 @@ class ChatService:
             plan_nodes=[n.name for n in plan.nodes],
             clarify=bool(plan.clarify_question),
             last_employee_ids=len(session.last_employee_ids),
+            last_focus=(
+                f"{session.last_focus.kind}:{session.last_focus.dimension}"
+                if session.last_focus
+                else None
+            ),
         )
 
         state = await self._executor.execute(plan, question=body.question, auth=auth)
 
         ids = extract_cohort_ids(state, plan)
-        if ids and should_update_last_employee_ids(plan, body.question, ids):
-            session = await self._memory.set_last_employee_ids(session, ids)
+        saved_ids = ids if ids and should_update_last_employee_ids(plan, body.question, ids) else []
+        if saved_ids:
+            session = await self._memory.set_last_employee_ids(session, saved_ids)
 
         entities = extract_entities_from_state(state)
         if entities:
@@ -111,6 +123,10 @@ class ChatService:
         constraints = infer_constraints_from_question(body.question)
         if constraints:
             session = await self._memory.merge_constraints(session, constraints)
+
+        focus = extract_last_focus(state, plan, employee_ids=saved_ids or None)
+        if focus:
+            session = await self._memory.set_last_focus(session, focus)
 
         answer, confidence, sources, clarify = await self._formatter.format(
             body.question, plan, state

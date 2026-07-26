@@ -40,6 +40,7 @@ class PlanCompiler:
         constraints: list[dict] = []
         last_ids: list[str] = []
         summary = ""
+        last_focus: dict | None = None
         if memory:
             for msg in memory.messages[-self._max_context :]:
                 recent.append({"role": msg.role, "content": msg.content[:800]})
@@ -47,12 +48,15 @@ class PlanCompiler:
             constraints = [c.model_dump(mode="json") for c in memory.constraint_memory]
             last_ids = list(memory.last_employee_ids)
             summary = memory.summary or ""
+            if memory.last_focus:
+                last_focus = memory.last_focus.model_dump(mode="json")
         return {
             "question": question,
             "role": auth.role.value,
             "tools": self._tools.discover(),
             "recent_messages": recent,
             "last_employee_ids": last_ids,
+            "last_focus": last_focus,
             "constraints": constraints,
             "entities": entities,
             "summary": summary,

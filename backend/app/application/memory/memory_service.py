@@ -6,7 +6,7 @@ from uuid import uuid4
 from app.application.memory.summarizer import Summarizer
 from app.domain.auth import AuthContext
 from app.domain.errors import ForbiddenError
-from app.domain.session import ChatMessage, ConstraintRef, EntityRef, SessionMemory
+from app.domain.session import ChatMessage, ConstraintRef, EntityRef, LastFocus, SessionMemory
 from app.ports.session_store import SessionStore
 
 
@@ -84,6 +84,12 @@ class MemoryService:
                 seen.add(s)
                 ordered.append(s)
         session.last_employee_ids = ordered
+        session.updated_at = datetime.now(UTC)
+        await self._store.save(session)
+        return session
+
+    async def set_last_focus(self, session: SessionMemory, focus: LastFocus) -> SessionMemory:
+        session.last_focus = focus
         session.updated_at = datetime.now(UTC)
         await self._store.save(session)
         return session

@@ -248,6 +248,80 @@ def test_cohort_keeps_resume_matches() -> None:
     assert should_update_last_employee_ids(plan, "how many know python", ids)
 
 
+def test_extract_last_focus_from_facet_plan() -> None:
+    from app.application.memory.context_updates import extract_last_focus
+
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="facet",
+                kind="tool",
+                name="sql",
+                params={"mode": "constrained", "distinct": True, "columns": ["country"]},
+            ),
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={"mode": "constrained", "count_distinct": "country"},
+            ),
+        ]
+    )
+    state = GraphState(
+        question="q",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "facet": ToolResult(
+                data={
+                    "rows": [
+                        {"country": "Germany"},
+                        {"country": "USA"},
+                        {"country": "UK"},
+                    ],
+                    "row_count": 3,
+                }
+            ),
+            "sql1": ToolResult(data={"count": 3, "rows": [{"count": 3}]}),
+        },
+    )
+    focus = extract_last_focus(state, plan)
+    assert focus is not None
+    assert focus.kind == "facet"
+    assert focus.dimension == "country"
+    assert focus.values == ["Germany", "USA", "UK"]
+
+
+def test_formatter_lists_countries() -> None:
+    formatter = ResponseFormatter(FakeLLM())
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="facet",
+                kind="tool",
+                name="sql",
+                params={"mode": "constrained", "distinct": True, "columns": ["country"]},
+            )
+        ],
+        response_strategy="template",
+    )
+    state = GraphState(
+        question="names please",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "facet": ToolResult(
+                data={
+                    "rows": [{"country": "Germany"}, {"country": "France"}],
+                    "row_count": 2,
+                }
+            )
+        },
+    )
+    answer, _, _, _ = asyncio.run(formatter.format("names please", plan, state))
+    assert "Germany" in answer
+    assert "France" in answer
+    assert "countries" in answer.lower()
+
+
 @pytest.mark.asyncio
 async def test_session_tenant_mismatch_forbidden() -> None:
     store = MemorySessionStore()

@@ -58,7 +58,10 @@ def test_followup_names_uses_last_employee_ids() -> None:
 
 
 def test_followup_names_without_memory_is_none() -> None:
-    assert try_heuristic_plan("please say there names") is None
+    plan = try_heuristic_plan("please say there names")
+    assert plan is not None
+    assert plan.nodes == []
+    assert plan.clarify_question is not None
 
 
 def test_of_them_count_uses_prior_ids() -> None:
@@ -156,7 +159,55 @@ def test_where_lives_uses_entity_memory_name() -> None:
     assert plan.nodes[-1].params["count_only"] is True
 
 
-def test_refers_to_prior_set() -> None:
+def test_countries_count_uses_facet_plan() -> None:
+    plan = try_heuristic_plan("in how different countries do we have employees?")
+    assert plan is not None
+    assert [n.id for n in plan.nodes] == ["facet", "sql1"]
+    assert plan.nodes[0].params["distinct"] is True
+    assert plan.nodes[0].params["columns"] == ["country"]
+    assert plan.nodes[1].params["count_distinct"] == "country"
+
+
+def test_names_please_after_country_focus_lists_countries() -> None:
+    from app.domain.session import LastFocus
+
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        last_focus=LastFocus(
+            kind="facet",
+            dimension="country",
+            values=["Germany", "USA", "UK", "UAE", "France"],
+        ),
+    )
+    plan = try_heuristic_plan("names please", memory=memory)
+    assert plan is not None
+    assert plan.nodes[0].params["distinct"] is True
+    assert plan.nodes[0].params["columns"] == ["country"]
+
+
+def test_names_please_with_employee_ids_lists_people() -> None:
+    memory = _memory_with_ids("00000000-0000-0000-0000-000000000001")
+    plan = try_heuristic_plan("names please", memory=memory)
+    assert plan is not None
+    assert plan.nodes[0].name == "sql"
+    assert plan.nodes[0].params["filters"]["employee_ids"] == [
+        "00000000-0000-0000-0000-000000000001"
+    ]
+
+
+def test_names_please_without_context_clarifies() -> None:
+    plan = try_heuristic_plan("names please")
+    assert plan is not None
+    assert plan.nodes == []
+    assert plan.clarify_question is not None
+    assert "which names" in plan.clarify_question.lower()
+
+
+def test_refers_to_prior_set_includes_names_please() -> None:
+    assert refers_to_prior_set("names please")
     assert refers_to_prior_set("how many of them?")
     assert refers_to_prior_set("please say their names")
     assert not refers_to_prior_set("how are you")

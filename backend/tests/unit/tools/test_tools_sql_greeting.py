@@ -29,14 +29,26 @@ def test_query_builder_ids() -> None:
     assert "hire_date_gt" in params
 
 
-def test_query_builder_empty_employee_ids_matches_nothing() -> None:
+def test_query_builder_count_distinct_country() -> None:
     sql, params = QueryBuilder().build(
-        columns=["id"],
-        filters={"employee_ids": []},
-        count_only=True,
+        columns=["country"],
+        filters={},
+        count_distinct="country",
     )
-    assert "1=0" in sql
-    assert "eid_0" not in params
+    assert "COUNT(DISTINCT e.country)" in sql
+    assert "LIMIT" not in sql.upper()
+    assert params == {}
+
+
+def test_query_builder_distinct_country() -> None:
+    sql, params = QueryBuilder().build(
+        columns=["country"],
+        filters={},
+        distinct=True,
+    )
+    assert "SELECT DISTINCT e.country" in sql
+    assert "ORDER BY e.country" in sql
+    assert "LIMIT" in sql.upper()
 
 
 def test_sql_validator_rejects_drop() -> None:

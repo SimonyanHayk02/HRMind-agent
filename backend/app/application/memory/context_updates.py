@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.application.execution.graph_state import GraphState
 from app.application.planning.plan_schema import ExecutionPlan
-from app.domain.session import ConstraintRef, EntityRef
+from app.domain.session import ConstraintRef, EntityRef, LastFocus
 from app.domain.tools.base import ToolResult
 
 _DEPARTMENTS = [
@@ -25,6 +25,7 @@ _CITY_RE = re.compile(r"\b(Berlin|Dubai|London|Paris|New York)\b", re.I)
 
 # Constraints that can be applied as SQL filters (not skills — those need RAG).
 _SQL_CONSTRAINT_FIELDS = frozenset({"department", "city", "country", "position"})
+_FACET_DIMS = ("country", "city", "department", "position")
 
 
 def infer_constraints_from_question(question: str) -> list[ConstraintRef]:
@@ -96,6 +97,85 @@ def extract_entities_from_state(state: GraphState) -> list[EntityRef]:
                 entities.append(EntityRef(employee_id=eid, display_name=name, confidence=0.8))
 
     return entities
+
+
+def extract_last_focus(
+    state: GraphState,
+    plan: ExecutionPlan,
+    *,
+    employee_ids: list[str] | None = None,
+) -> LastFocus | None:
+    """Derive discourse focus from the plan/results for short follow-ups."""
+    # Prefer explicit distinct / count_distinct facet plans
+    for node in plan.nodes:
+        if node.name != "sql":
+            continue
+        params = node.params or {}
+        dim = params.get("count_distinct")
+        if not dim and params.get("distinct"):
+            cols = params.get("columns") or []
+            if cols:
+                dim = cols[0]
+        if not dim or dim not in _FACET_DIMS:
+            continue
+        values = _facet_values_from_state(state, str(dim), prefer_node=node.id)
+        return LastFocus(kind="facet", dimension=str(dim), values=values)
+
+    # Distinct-looking rows without employee id (nl2sql fallback)
+    for node in plan.nodes:
+        result = state.node_results.get(node.id)
+        data = result.data if isinstance(result, ToolResult) else result
+        if not isinstance(data, dict):
+            continue
+        rows = data.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        sample = rows[0] if isinstance(rows[0], dict) else None
+        if not sample or sample.get("id") or sample.get("first_name"):
+            continue
+        for dim in _FACET_DIMS:
+            if dim in sample:
+                values = _unique_row_values(rows, dim)
+                if values:
+                    return LastFocus(kind="facet", dimension=dim, values=values)
+
+    if employee_ids:
+        return LastFocus(kind="cohort", dimension="employees", values=[])
+    return None
+
+
+def _facet_values_from_state(
+    state: GraphState, dimension: str, *, prefer_node: str | None = None
+) -> list[str]:
+    order = []
+    if prefer_node:
+        order.append(prefer_node)
+    order.extend(k for k in state.node_results if k != prefer_node)
+    for key in order:
+        result = state.node_results.get(key)
+        data = result.data if isinstance(result, ToolResult) else result
+        if not isinstance(data, dict):
+            continue
+        rows = data.get("rows")
+        if isinstance(rows, list) and rows:
+            vals = _unique_row_values(rows, dimension)
+            if vals:
+                return vals
+    return []
+
+
+def _unique_row_values(rows: list, dimension: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or dimension not in row:
+            continue
+        val = str(row.get(dimension) or "").strip()
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    return out
 
 
 def plan_mentions_result_set(plan: ExecutionPlan) -> bool:

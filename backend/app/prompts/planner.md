@@ -14,9 +14,13 @@ Rules:
 - Never invent employee facts; tools fetch data
 - Prefer sql mode=constrained with filters when employee_ids are known
 - If the user asks about vacation, PTO, leave, benefits, payroll, bonus, visa, or other data not in employees/resumes, return nodes=[] and set clarify_question to explain you do not have that information (do not run sql)
-- Conversation context is provided as recent_messages, last_employee_ids, constraints, entities, summary
+- Conversation context is provided as recent_messages, last_employee_ids, last_focus, constraints, entities, summary
 - If the user refers to "them/those/of them/that group" and last_employee_ids is non-empty, pass those IDs into resume_search.employee_ids AND/OR sql filters.employee_ids (or intersect_ids after resume_search)
 - When last_employee_ids is empty but constraints include department/city/country/position, apply those as sql filters while refining ("of them know python")
 - Set active_cohort_node to the final intersect/extract/sql-rows node (not the broad resume_search hit list)
 - Apply active constraints (department/city/skill) when refining a prior result set
-- For "say their names" / "list them", sql constrained over last_employee_ids with columns first_name, last_name, department, position
+- For "say their names" / "list them" / "names please":
+  - If last_focus.kind is "facet" (country/city/department), list DISTINCT values of that dimension (sql constrained distinct=true) — do NOT dump all employees
+  - Else if last_employee_ids is non-empty, sql constrained over those IDs with columns first_name, last_name, department, position
+  - Else ask a short clarify about what to list
+- For "how many different countries/cities/departments": sql with count_distinct plus a distinct value list node

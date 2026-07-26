@@ -52,6 +52,42 @@ _FOLLOWUP_NAMES_RE = re.compile(
     r")\b",
     re.I,
 )
+# Short utterances that almost always continue the prior answer ("names please")
+_SHORT_LIST_RE = re.compile(
+    r"^\s*("
+    r"names?(?:\s+please)?|"
+    r"(?:the\s+)?names?(?:\s+please)?|"
+    r"list(?:\s+them|\s+those)?(?:\s+please)?|"
+    r"which\s+ones?(?:\s+please)?|"
+    r"which\s+(?:countries|cities|departments)(?:\s+please)?|"
+    r"what\s+are\s+they|"
+    r"give\s+(?:me\s+)?(?:the\s+)?names?"
+    r")[\s?.!]*$",
+    re.I,
+)
+# "how many different countries" / typo-tolerant "in how different countries"
+_FACET_DIM_RE = re.compile(
+    r"\b(?P<dim>countries|country|cities|city|departments|department)\b",
+    re.I,
+)
+_FACET_COUNT_RE = re.compile(
+    r"\b("
+    r"(?:how many|how much|number of|count)\s+(?:different\s+|unique\s+)?"
+    r"(?:countries|country|cities|city|departments|department)"
+    r"|"
+    r"in how(?:\s+many)?(?:\s+different)?\s+(?:countries|country|cities|city|departments|department)"
+    r"|"
+    r"(?:different|unique)\s+(?:countries|country|cities|city|departments|department)"
+    r")\b",
+    re.I,
+)
+_FACET_LIST_RE = re.compile(
+    r"\b("
+    r"(?:which|what|list(?:\s+the)?|name(?:\s+the)?)\s+"
+    r"(?:different\s+|unique\s+)?(?:countries|country|cities|city|departments|department)"
+    r")\b",
+    re.I,
+)
 _CITY_RE = re.compile(r"\b(?:in|from)\s+(Berlin|Dubai|London|Paris|New York)\b", re.I)
 _PERSON_LOCATION_RE = re.compile(
     r"\bwhere\s+(?:(?:does|do|is)\s+)?(?:the\s+)?"
@@ -67,9 +103,85 @@ _ABOUT_PERSON_RE = re.compile(
 
 _NAME_COLUMNS = ["id", "first_name", "last_name", "department", "position"]
 
+_FACET_WORD_TO_COL = {
+    "countries": "country",
+    "country": "country",
+    "cities": "city",
+    "city": "city",
+    "departments": "department",
+    "department": "department",
+}
+
 
 def refers_to_prior_set(question: str) -> bool:
-    return bool(_ANAPHORA_RE.search(question) or _FOLLOWUP_NAMES_RE.search(question))
+    q = question.strip()
+    return bool(
+        _ANAPHORA_RE.search(q)
+        or _FOLLOWUP_NAMES_RE.search(q)
+        or _SHORT_LIST_RE.search(q)
+    )
+
+
+def is_list_followup(question: str) -> bool:
+    q = question.strip()
+    return bool(_FOLLOWUP_NAMES_RE.search(q) or _SHORT_LIST_RE.search(q))
+
+
+def _normalize_facet_dim(raw: str) -> str | None:
+    return _FACET_WORD_TO_COL.get(raw.lower())
+
+
+def _detect_facet_dimension(question: str) -> str | None:
+    m = _FACET_DIM_RE.search(question)
+    if not m:
+        return None
+    return _normalize_facet_dim(m.group("dim"))
+
+
+def _facet_count_plan(dimension: str) -> ExecutionPlan:
+    """Count distinct facet values and materialize the value list for follow-ups."""
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="facet",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "distinct": True,
+                    "columns": [dimension],
+                },
+            ),
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_distinct": dimension,
+                },
+            ),
+        ],
+        response_strategy="template",
+    )
+
+
+def _facet_list_plan(dimension: str) -> ExecutionPlan:
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="facet",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "distinct": True,
+                    "columns": [dimension],
+                },
+            )
+        ],
+        response_strategy="template",
+    )
 
 
 def _employee_by_name_plan(name: str) -> ExecutionPlan:
@@ -298,9 +410,34 @@ def try_heuristic_plan(
     if loc:
         return _employee_by_name_plan(loc.group(1))
 
-    # Follow-up: list names of the active result set
-    if prior_ids and _FOLLOWUP_NAMES_RE.search(q):
-        return _sql_over_ids(prior_ids, count_only=False)
+    focus = memory.last_focus if memory else None
+
+    # Short list follow-up: "names please" → facet values OR employee cohort
+    if is_list_followup(q):
+        if focus and focus.kind == "facet" and focus.dimension:
+            return _facet_list_plan(focus.dimension)
+        if prior_ids:
+            return _sql_over_ids(prior_ids, count_only=False)
+        # Explicit "which countries" without prior focus still works via facet list regex below
+        if not _FACET_LIST_RE.search(q):
+            return ExecutionPlan(
+                nodes=[],
+                response_strategy="template",
+                clarify_question=(
+                    "Which names should I list — countries, cities, departments, "
+                    "or employees from a previous search?"
+                ),
+            )
+
+    # Distinct facet count/list ("how many different countries", "which countries")
+    if _FACET_COUNT_RE.search(q):
+        dim = _detect_facet_dimension(q)
+        if dim:
+            return _facet_count_plan(dim)
+    if _FACET_LIST_RE.search(q):
+        dim = _detect_facet_dimension(q)
+        if dim:
+            return _facet_list_plan(dim)
 
     # Follow-up: refine prior set by city ("of them in Berlin")
     city_match = _CITY_RE.search(q)

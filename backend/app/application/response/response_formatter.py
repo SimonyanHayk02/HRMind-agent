@@ -69,6 +69,7 @@ class ResponseFormatter:
             )
 
         count_asked = is_count_question(question) or _plan_is_count_only(plan)
+        facet_dim = _plan_facet_dimension(plan)
 
         if plan.response_strategy == "template":
             # Prefer explicit count payloads when the question/plan is a count
@@ -76,13 +77,23 @@ class ResponseFormatter:
             if count_asked:
                 for p in reversed(payloads):
                     if isinstance(p, dict) and p.get("count") is not None:
-                        return f"The answer is {p['count']}.", confidence, sources, None
+                        return (
+                            _format_facet_count(int(p["count"]), facet_dim),
+                            confidence,
+                            sources,
+                            None,
+                        )
                     if (
                         isinstance(p, dict)
                         and "row_count" in p
                         and "rows" not in p
                     ):
-                        return f"The answer is {p['row_count']}.", confidence, sources, None
+                        return (
+                            _format_facet_count(int(p["row_count"]), facet_dim),
+                            confidence,
+                            sources,
+                            None,
+                        )
             for p in reversed(payloads):
                 if (
                     count_asked
@@ -90,15 +101,28 @@ class ResponseFormatter:
                     and "count" in p
                     and p["count"] is not None
                 ):
-                    return f"The answer is {p['count']}.", confidence, sources, None
+                    return (
+                        _format_facet_count(int(p["count"]), facet_dim),
+                        confidence,
+                        sources,
+                        None,
+                    )
                 if (
                     count_asked
                     and isinstance(p, dict)
                     and "row_count" in p
                     and "rows" not in p
                 ):
-                    return f"The answer is {p['row_count']}.", confidence, sources, None
+                    return (
+                        _format_facet_count(int(p["row_count"]), facet_dim),
+                        confidence,
+                        sources,
+                        None,
+                    )
                 if isinstance(p, dict) and isinstance(p.get("rows"), list):
+                    facet = _format_facet_rows(p["rows"], facet_dim)
+                    if facet:
+                        return facet, confidence, sources, None
                     named = _format_employee_rows(p["rows"])
                     if named:
                         return named, confidence, sources, None
@@ -144,8 +168,78 @@ class ResponseFormatter:
 
 def _plan_is_count_only(plan: ExecutionPlan) -> bool:
     return any(
-        n.name == "sql" and bool((n.params or {}).get("count_only")) for n in plan.nodes
+        n.name == "sql"
+        and (
+            bool((n.params or {}).get("count_only"))
+            or bool((n.params or {}).get("count_distinct"))
+        )
+        for n in plan.nodes
     )
+
+
+def _plan_facet_dimension(plan: ExecutionPlan) -> str | None:
+    for node in plan.nodes:
+        if node.name != "sql":
+            continue
+        params = node.params or {}
+        dim = params.get("count_distinct")
+        if dim:
+            return str(dim)
+        if params.get("distinct"):
+            cols = params.get("columns") or []
+            if cols:
+                return str(cols[0])
+    return None
+
+
+def _format_facet_count(count: int, dimension: str | None) -> str:
+    labels = {
+        "country": "countries",
+        "city": "cities",
+        "department": "departments",
+        "position": "positions",
+    }
+    if dimension in labels:
+        return f"We have employees in {count} different {labels[dimension]}."
+    return f"The answer is {count}."
+
+
+def _format_facet_rows(rows: list[Any], dimension: str | None) -> str | None:
+    if not dimension:
+        # Infer from row keys when plan dim missing
+        if rows and isinstance(rows[0], dict):
+            for key in ("country", "city", "department", "position"):
+                if key in rows[0] and "id" not in rows[0] and "first_name" not in rows[0]:
+                    dimension = key
+                    break
+    if not dimension:
+        return None
+    values: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or dimension not in row:
+            continue
+        val = str(row.get(dimension) or "").strip()
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        values.append(val)
+    if not values:
+        return None
+    # Employee name rows also contain department — don't treat as facet lists
+    if any(isinstance(r, dict) and (r.get("id") or r.get("first_name")) for r in rows):
+        return None
+    labels = {
+        "country": "countries",
+        "city": "cities",
+        "department": "departments",
+        "position": "positions",
+    }
+    label = labels.get(dimension, dimension)
+    if len(values) == 1:
+        return f"The matching {label[:-1] if label.endswith('s') else label} is {values[0]}."
+    bullet = "\n".join(f"- {v}" for v in values)
+    return f"Here are the {len(values)} {label}:\n{bullet}"
 
 
 def _looks_unscoped_dump(payload: Any) -> bool:

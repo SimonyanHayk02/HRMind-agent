@@ -64,11 +64,18 @@ class SqlTool:
         else:
             cols = sorted(allowed)
         count_only = bool(params.get("count_only"))
+        distinct = bool(params.get("distinct"))
+        count_distinct = params.get("count_distinct")
         filters = dict(params.get("filters") or {})
         if params.get("employee_ids"):
             filters["employee_ids"] = params["employee_ids"]
         sql, bind = self._builder.build(
-            columns=cols, filters=filters, max_rows=self._max_rows, count_only=count_only
+            columns=cols,
+            filters=filters,
+            max_rows=self._max_rows,
+            count_only=count_only,
+            distinct=distinct,
+            count_distinct=count_distinct,
         )
         key = cache_keys.build("sql", auth, sql=sql, params=bind)
         cached = await self._cache.get(key)

@@ -28,6 +28,15 @@ class ConstraintRef(BaseModel):
     value: Any
 
 
+class LastFocus(BaseModel):
+    """What the last useful answer was about — drives short follow-ups like 'names please'."""
+
+    kind: Literal["facet", "cohort"] = "cohort"
+    # Facet dimension (country/city/department) or "employees" for a people cohort.
+    dimension: str | None = None
+    values: list[str] = Field(default_factory=list)
+
+
 class SessionMemory(BaseModel):
     session_id: str
     tenant_id: str
@@ -39,4 +48,5 @@ class SessionMemory(BaseModel):
     constraint_memory: list[ConstraintRef] = Field(default_factory=list)
     # Last employee ID set from resume/SQL tools — used for follow-ups like "say their names".
     last_employee_ids: list[str] = Field(default_factory=list)
+    last_focus: LastFocus | None = None
     updated_at: datetime | None = None

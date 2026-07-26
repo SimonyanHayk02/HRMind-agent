@@ -18,8 +18,11 @@ from app.application.planning.plan_validator import PlanValidator
 from app.application.response.response_formatter import ResponseFormatter
 from app.application.routing.embedding_router import EmbeddingRouter
 from app.application.routing.rule_router import RuleRouter
+from app.config.logging import get_logger
 from app.domain.auth import AuthContext
 from app.domain.enums import RouterLabel
+
+logger = get_logger(__name__)
 
 
 class ChatService:
@@ -84,6 +87,16 @@ class ChatService:
             else:
                 plan = await self._planner.compile(body.question, auth=auth, memory=session)
                 self._validator.validate(plan, auth)
+
+        logger.info(
+            "chat_plan_ready",
+            trace_id=trace_id,
+            session_id=session.session_id,
+            question=body.question[:200],
+            plan_nodes=[n.name for n in plan.nodes],
+            clarify=bool(plan.clarify_question),
+            last_employee_ids=len(session.last_employee_ids),
+        )
 
         state = await self._executor.execute(plan, question=body.question, auth=auth)
 

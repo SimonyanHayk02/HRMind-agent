@@ -45,14 +45,62 @@ jobs:
             echo "::error::Missing GitHub secret RAILWAY_TOKEN (Railway Project Token)."
             exit 1
           fi
-          if [ -z "${RAILWAY_SERVICE_ID:-}" ]; then
-            echo "::error::Missing GitHub secret RAILWAY_SERVICE_ID."
-            echo "Your Railway project has multiple services (e.g. API + Redis)."
-            echo "Add secret RAILWAY_SERVICE_ID = the API/web service name or ID."
-            echo "Find it: Railway → API service → Settings → copy Service ID (or use the service name)."
-            echo "Listing project services (if token allows):"
-            railway status --json || true
-            exit 1
+
+          SERVICE="${RAILWAY_SERVICE_ID:-}"
+          if [ -z "$SERVICE" ]; then
+            echo "RAILWAY_SERVICE_ID not set — listing services and auto-detecting API..."
+            RAW="$(railway service list --json 2>/dev/null || true)"
+            if [ -z "$RAW" ]; then
+              RAW="$(railway status --json 2>/dev/null || true)"
+            fi
+            echo "$RAW"
+            SERVICE="$(printf '%s' "$RAW" | python3 -c '
+          import json, re, sys
+          raw = sys.stdin.read().strip()
+          if not raw:
+              raise SystemExit(0)
+          data = json.loads(raw)
+          services = []
+          if isinstance(data, list):
+              services = data
+          elif isinstance(data, dict):
+              for key in ("services", "Services"):
+                  if isinstance(data.get(key), list):
+                      services = data[key]
+                      break
+              if not services:
+                  def walk(obj, out):
+                      if isinstance(obj, dict):
+                          if "name" in obj and ("id" in obj or "serviceId" in obj):
+                              out.append(obj)
+                          for v in obj.values():
+                              walk(v, out)
+                      elif isinstance(obj, list):
+                          for i in obj:
+                              walk(i, out)
+                  walk(data, services)
+          skip = re.compile(r"^(redis|postgres|postgresql|mongo|mongodb|mysql|database)$", re.I)
+          names = []
+          for s in services:
+              name = str(s.get("name") or s.get("serviceName") or "")
+              if not name or skip.match(name):
+                  continue
+              if name not in names:
+                  names.append(name)
+          if len(names) == 1:
+              print(names[0])
+          elif len(names) > 1:
+              print("MULTIPLE:" + ",".join(names), file=sys.stderr)
+          ')"
+            if [ -z "$SERVICE" ]; then
+              echo "::error::Could not auto-detect a single API service."
+              echo "Add GitHub secret RAILWAY_SERVICE_ID using the service NAME from the Railway project canvas"
+              echo "(the title on the service box — e.g. HRMind-agent). Do not use Redis."
+              echo "Or copy the ID from the browser URL after clicking the API service:"
+              echo "  .../project/<project>/service/<SERVICE_ID_HERE>"
+              exit 1
+            fi
           fi
-          echo "Deploying to service: $RAILWAY_SERVICE_ID"
-          railway up --ci --detach --service "$RAILWAY_SERVICE_ID"
+
+          echo "Deploying to service: $SERVICE"
+          railway up --ci --detach --service "$SERVICE"

@@ -5,7 +5,12 @@ from pathlib import Path
 
 from app.application.planning.heuristic_planner import try_heuristic_plan
 from app.application.planning.plan_schema import ExecutionPlan
+from app.application.schema.catalog_service import CatalogService
+from app.application.understanding.extract_query_state import extract_query_state
+from app.application.understanding.plan_from_query_state import plan_from_query_state
 from app.domain.auth import AuthContext
+from app.domain.query_state import QueryState
+from app.domain.schema_catalog import default_employee_catalog
 from app.domain.session import SessionMemory
 from app.domain.tools.registry import ToolRegistry
 from app.ports.llm import LLMClient
@@ -19,11 +24,13 @@ class PlanCompiler:
         prompts_dir: Path | None = None,
         *,
         max_context: int = 8,
+        catalog_service: CatalogService | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._prompts_dir = prompts_dir or Path(__file__).resolve().parents[2] / "prompts"
         self._max_context = max_context
+        self._catalog = catalog_service
 
     def _load_prompt(self) -> str:
         path = self._prompts_dir / "planner.md"
@@ -34,7 +41,18 @@ class PlanCompiler:
             "(tool|operator), depends_on, response_strategy."
         )
 
-    def _context_packet(self, question: str, auth: AuthContext, memory: SessionMemory | None) -> dict:
+    def _catalog_view(self) -> dict:
+        if self._catalog is not None:
+            return self._catalog.planner_view()
+        return default_employee_catalog().planner_view()
+
+    def _context_packet(
+        self,
+        question: str,
+        auth: AuthContext,
+        memory: SessionMemory | None,
+        query_state: QueryState | None = None,
+    ) -> dict:
         recent: list[dict[str, str]] = []
         entities: list[dict] = []
         constraints: list[dict] = []
@@ -54,6 +72,8 @@ class PlanCompiler:
             "question": question,
             "role": auth.role.value,
             "tools": self._tools.discover(),
+            "schema_catalog": self._catalog_view(),
+            "query_state": query_state.model_dump(mode="json") if query_state else None,
             "recent_messages": recent,
             "last_employee_ids": last_ids,
             "last_focus": last_focus,
@@ -69,11 +89,20 @@ class PlanCompiler:
         auth: AuthContext,
         memory: SessionMemory | None = None,
     ) -> ExecutionPlan:
+        catalog = self._catalog.get() if self._catalog else default_employee_catalog()
+        query_state = extract_query_state(question, catalog=catalog, memory=memory)
+
+        structured = plan_from_query_state(query_state, memory=memory)
+        if structured is not None:
+            return structured
+
         heuristic = try_heuristic_plan(question, memory=memory)
         if heuristic is not None:
             return heuristic
 
-        user = json.dumps(self._context_packet(question, auth, memory), default=str)
+        user = json.dumps(
+            self._context_packet(question, auth, memory, query_state), default=str
+        )
         raw = await self._llm.complete(
             system=self._load_prompt(), user=user, temperature=0.0, response_json=True
         )

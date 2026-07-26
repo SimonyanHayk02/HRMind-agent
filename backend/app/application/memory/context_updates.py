@@ -24,8 +24,10 @@ _SKILL_RE = re.compile(rf"\b({_SKILLS})\b", re.I)
 _CITY_RE = re.compile(r"\b(Berlin|Dubai|London|Paris|New York)\b", re.I)
 
 # Constraints that can be applied as SQL filters (not skills — those need RAG).
-_SQL_CONSTRAINT_FIELDS = frozenset({"department", "city", "country", "position"})
-_FACET_DIMS = ("country", "city", "department", "position")
+_SQL_CONSTRAINT_FIELDS = frozenset(
+    {"department", "city", "country", "position", "education", "employment_status"}
+)
+_FACET_DIMS = ("country", "city", "department", "position", "education", "employment_status")
 
 
 def infer_constraints_from_question(question: str) -> list[ConstraintRef]:

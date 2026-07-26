@@ -21,6 +21,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     container = await build_container(settings)
+    catalog = container.extras.get("catalog_service")
+    if catalog is not None:
+        try:
+            await catalog.warm()
+            logger.info("schema_catalog_warmed")
+        except Exception as exc:
+            logger.warning("schema_catalog_warm_failed", error=str(exc))
     app.state.container = container
     logger.info("app_started", env=settings.app_env)
     try:

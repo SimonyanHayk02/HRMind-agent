@@ -19,9 +19,13 @@ from app.application.planning.plan_validator import PlanValidator
 from app.application.response.response_formatter import ResponseFormatter
 from app.application.routing.embedding_router import EmbeddingRouter
 from app.application.routing.rule_router import RuleRouter
+from app.application.schema.catalog_service import CatalogService
+from app.application.understanding.extract_query_state import extract_query_state
+from app.application.understanding.merge_query_state import apply_universe_marker
 from app.config.logging import get_logger
 from app.domain.auth import AuthContext
 from app.domain.enums import RouterLabel
+from app.domain.schema_catalog import default_employee_catalog
 
 logger = get_logger(__name__)
 
@@ -37,6 +41,7 @@ class ChatService:
         validator: PlanValidator,
         executor: LangGraphExecutor,
         formatter: ResponseFormatter,
+        catalog_service: CatalogService | None = None,
     ) -> None:
         self._memory = memory
         self._rule_router = rule_router
@@ -45,6 +50,7 @@ class ChatService:
         self._validator = validator
         self._executor = executor
         self._formatter = formatter
+        self._catalog = catalog_service
 
     async def handle(self, body: ChatRequest, *, auth: AuthContext) -> ChatResponse:
         trace_id = str(uuid4())
@@ -94,6 +100,15 @@ class ChatService:
                 plan = await self._planner.compile(body.question, auth=auth, memory=session)
                 self._validator.validate(plan, auth)
 
+        # Understand + persist dialog filters (even when heuristics/LLM planned)
+        catalog = self._catalog.get() if self._catalog else default_employee_catalog()
+        query_state = extract_query_state(
+            body.question, catalog=catalog, memory=session
+        )
+        qs_constraints = apply_universe_marker(session, query_state)
+        if qs_constraints:
+            session = await self._memory.merge_constraints(session, qs_constraints)
+
         logger.info(
             "chat_plan_ready",
             trace_id=trace_id,
@@ -102,6 +117,8 @@ class ChatService:
             plan_nodes=[n.name for n in plan.nodes],
             clarify=bool(plan.clarify_question),
             last_employee_ids=len(session.last_employee_ids),
+            query_intent=query_state.intent,
+            query_filters=[f"{f.field}={f.value}" for f in query_state.filters],
             last_focus=(
                 f"{session.last_focus.kind}:{session.last_focus.dimension}"
                 if session.last_focus

@@ -86,8 +86,22 @@ def wire_application_stack(container) -> None:
         max_history=settings.max_history,
         summary_trigger=settings.summary_trigger,
     )
+
+    from app.application.schema.catalog_service import CatalogService
+
+    catalog_service = CatalogService(
+        session_factory=container.session_factory,
+        cache=container.cache,
+        ttl_seconds=3600,
+    )
+    container.extras["catalog_service"] = catalog_service
+
     planner = PlanCompiler(
-        container.llm, tools, prompts_dir, max_context=settings.max_context
+        container.llm,
+        tools,
+        prompts_dir,
+        max_context=settings.max_context,
+        catalog_service=catalog_service,
     )
     validator = PlanValidator(tools, operators, max_nodes=settings.max_plan_nodes)
     node_runner = NodeRunner(tools, operators, timeout_ms=settings.tool_timeout_ms)
@@ -102,6 +116,7 @@ def wire_application_stack(container) -> None:
         validator=validator,
         executor=graph_executor,
         formatter=formatter,
+        catalog_service=catalog_service,
     )
     container.extras["chat_service"] = chat_service
     container.extras["tool_registry"] = tools

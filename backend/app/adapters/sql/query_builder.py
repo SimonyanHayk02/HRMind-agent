@@ -28,9 +28,12 @@ class QueryBuilder:
         "city",
         "employment_status",
         "position",
+        "education",
     }
 
-    ALLOWED_FACETS = frozenset({"department", "country", "city", "position", "employment_status"})
+    ALLOWED_FACETS = frozenset(
+        {"department", "country", "city", "position", "employment_status", "education"}
+    )
 
     def build(
         self,
@@ -90,7 +93,7 @@ class QueryBuilder:
         if "hire_date_lt" in filters:
             sql += " AND e.hire_date < :hire_date_lt"
             params["hire_date_lt"] = _as_date(filters["hire_date_lt"])
-        for col in ("department", "country", "city", "employment_status", "position"):
+        for col in ("department", "country", "city", "employment_status", "position", "education"):
             if col in filters and filters[col] is not None:
                 sql += f" AND e.{col} = :{col}"
                 params[col] = filters[col]

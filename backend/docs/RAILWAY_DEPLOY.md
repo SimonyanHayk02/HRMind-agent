@@ -55,6 +55,8 @@ Deploys are triggered by GitHub Actions **after tests pass on `main`** (see `.gi
 
 Push to `main` → `test` job → `deploy` job → Railway build.
 
+The deploy job uploads the **repo root** (so `backend/` exists in the snapshot). Keep Railway service **Root Directory** set to `backend`.
+
 ---
 
 ## 3) Add Redis on Railway

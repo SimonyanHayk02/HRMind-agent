@@ -28,9 +28,8 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
+    # Deploy from repo root so Railway Root Directory=backend resolves correctly.
+    # (Uploading only backend/ makes Railway look for backend/backend and fail.)
     steps:
       - uses: actions/checkout@v4
       - name: Install Railway CLI
@@ -94,13 +93,12 @@ jobs:
           ')"
             if [ -z "$SERVICE" ]; then
               echo "::error::Could not auto-detect a single API service."
-              echo "Add GitHub secret RAILWAY_SERVICE_ID using the service NAME from the Railway project canvas"
-              echo "(the title on the service box — e.g. HRMind-agent). Do not use Redis."
-              echo "Or copy the ID from the browser URL after clicking the API service:"
-              echo "  .../project/<project>/service/<SERVICE_ID_HERE>"
+              echo "Add GitHub secret RAILWAY_SERVICE_ID using the service NAME from the Railway canvas."
               exit 1
             fi
           fi
 
-          echo "Deploying to service: $SERVICE"
+          echo "Deploying to service: $SERVICE (from repo root; Railway Root Directory should be backend)"
+          test -f backend/Dockerfile
+          test -f backend/railway.toml
           railway up --ci --detach --service "$SERVICE"

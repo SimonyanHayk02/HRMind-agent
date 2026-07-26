@@ -10,7 +10,7 @@ from app.application.memory.context_updates import (
     infer_constraints_from_question,
 )
 from app.application.memory.memory_service import MemoryService
-from app.application.memory.result_ids import extract_employee_ids_from_state
+from app.application.memory.result_ids import extract_cohort_ids
 from app.application.planning.heuristic_planner import refers_to_prior_set
 from app.application.planning.plan_compiler import PlanCompiler
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
@@ -100,7 +100,7 @@ class ChatService:
 
         state = await self._executor.execute(plan, question=body.question, auth=auth)
 
-        ids = extract_employee_ids_from_state(state)
+        ids = extract_cohort_ids(state, plan)
         if ids and should_update_last_employee_ids(plan, body.question, ids):
             session = await self._memory.set_last_employee_ids(session, ids)
 

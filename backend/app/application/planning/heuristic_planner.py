@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.application.memory.context_updates import filters_from_constraint_memory
 from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.planning.unsupported import UNSUPPORTED_ANSWER, is_unsupported_topic
 from app.domain.session import SessionMemory
@@ -82,6 +83,7 @@ def _employee_by_name_plan(name: str) -> ExecutionPlan:
             )
         ],
         response_strategy="llm_format",
+        active_cohort_node="e1",
     )
 
 
@@ -136,6 +138,39 @@ def _sql_over_ids(
             PlanNode(id="sql1", kind="tool", name="sql", params=params),
         ],
         response_strategy="template",
+        active_cohort_node="sql1",
+    )
+
+
+def _department_count_plan(dept: str) -> ExecutionPlan:
+    """Count + materialize department cohort IDs for follow-up 'of them…' turns."""
+    filters = {"department": dept}
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="cohort",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_only": False,
+                    "filters": filters,
+                    "columns": ["id"],
+                },
+            ),
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={
+                    "mode": "constrained",
+                    "count_only": True,
+                    "filters": filters,
+                },
+            ),
+        ],
+        response_strategy="template",
+        active_cohort_node="cohort",
     )
 
 
@@ -145,13 +180,24 @@ def _resume_search_plan(
     count_only: bool = False,
     hire_date_gt: str | None = None,
     intersect_with: list[str] | None = None,
+    scope_filters: dict | None = None,
 ) -> ExecutionPlan:
+    """RAG plan with optional prior-cohort / SQL-filter scoping.
+
+    - intersect_with: prior employee IDs (SQL→RAG). Passed into resume_search and
+      intersected after extract as a safety net.
+    - scope_filters: remembered department/city/… when IDs were not materialized.
+    """
+    resume_params: dict = {"question": question}
+    if intersect_with:
+        resume_params["employee_ids"] = list(intersect_with)
+
     nodes: list[PlanNode] = [
         PlanNode(
             id="r1",
             kind="tool",
             name="resume_search",
-            params={"question": question},
+            params=resume_params,
         ),
         PlanNode(
             id="ids",
@@ -175,10 +221,12 @@ def _resume_search_plan(
         )
         id_source = "ix"
 
-    if count_only or hire_date_gt or intersect_with is not None:
-        filters: dict = {}
+    need_sql = bool(count_only or hire_date_gt or intersect_with is not None or scope_filters)
+    if need_sql:
+        filters: dict = dict(scope_filters or {})
         if hire_date_gt:
             filters["hire_date_gt"] = hire_date_gt
+        list_names = not count_only and not hire_date_gt
         nodes.append(
             PlanNode(
                 id="sql1",
@@ -189,11 +237,7 @@ def _resume_search_plan(
                     "mode": "constrained",
                     "count_only": True if (count_only or hire_date_gt) else False,
                     "filters": filters,
-                    **(
-                        {}
-                        if (count_only or hire_date_gt)
-                        else {"columns": _NAME_COLUMNS}
-                    ),
+                    **({"columns": _NAME_COLUMNS} if list_names else {}),
                 },
                 input_bindings={"employee_ids": f"nodes.{id_source}"},
             )
@@ -201,12 +245,14 @@ def _resume_search_plan(
         return ExecutionPlan(
             nodes=nodes,
             response_strategy="template" if (count_only or hire_date_gt) else "llm_format",
+            active_cohort_node="sql1" if list_names else id_source,
         )
 
-    # Plain resume list (no count / intersect)
+    # Plain resume list (no count / intersect) — still extract IDs for cohort memory
     return ExecutionPlan(
-        nodes=[nodes[0]],
+        nodes=nodes,
         response_strategy="llm_format",
+        active_cohort_node="ids",
     )
 
 
@@ -222,7 +268,13 @@ def try_heuristic_plan(
     # Full-company dumps are not a meaningful "them" cohort
     if len(prior_ids) > 50:
         prior_ids = []
-    anaphora = bool(prior_ids) and refers_to_prior_set(q)
+    scope_filters = filters_from_constraint_memory(
+        memory.constraint_memory if memory else None
+    )
+    refers = refers_to_prior_set(q)
+    # Anaphora with IDs, or "of them" with remembered SQL constraints (dept/city).
+    anaphora = refers and bool(prior_ids)
+    scoped_followup = refers and (bool(prior_ids) or bool(scope_filters))
 
     # Out-of-schema topics (vacation, benefits, …) — do not invent via SQL
     if is_unsupported_topic(q):
@@ -273,30 +325,35 @@ def try_heuristic_plan(
     if anaphora and _COUNT_RE.search(q) and not _SKILL_RE.search(q):
         return _sql_over_ids(prior_ids, count_only=True)
 
-    # Count by department (global, not anaphora)
-    if not anaphora:
+    # Constraint-only follow-up count (e.g. Engineering count → "how many of them?")
+    if scoped_followup and not prior_ids and _COUNT_RE.search(q) and not _SKILL_RE.search(q):
+        return ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "count_only": True,
+                        "filters": dict(scope_filters),
+                    },
+                )
+            ],
+            response_strategy="template",
+            active_cohort_node="sql1",
+        )
+
+    # Count by department (global) — also materialize cohort IDs
+    if not scoped_followup:
         for dept in _DEPARTMENTS:
             if dept.lower() in lower and any(
                 w in lower for w in ("how many", "count", "number of")
             ):
-                return ExecutionPlan(
-                    nodes=[
-                        PlanNode(
-                            id="sql1",
-                            kind="tool",
-                            name="sql",
-                            params={
-                                "mode": "constrained",
-                                "count_only": True,
-                                "filters": {"department": dept},
-                            },
-                        )
-                    ],
-                    response_strategy="template",
-                )
+                return _department_count_plan(dept)
 
     # List/filter by city (global)
-    if city_match and not anaphora and any(
+    if city_match and not scoped_followup and any(
         w in lower for w in ("employee", "people", "staff", "list", "who")
     ):
         return ExecutionPlan(
@@ -314,21 +371,24 @@ def try_heuristic_plan(
                 )
             ],
             response_strategy="template",
+            active_cohort_node="sql1",
         )
 
-    # Resume / skills search — intersect prior set when anaphoric.
-    # Skill token + any skill/HR context word is enough (covers "developing in python").
+    # Resume / skills search — intersect prior set or apply constraint scope.
     skill_match = _SKILL_RE.search(q)
     if skill_match and _SKILL_INTENT_RE.search(q):
         year_match = re.search(r"(?:after|since)\s+(20\d{2})", lower)
         count_only = bool(_COUNT_RE.search(q))
         hire_date_gt = f"{year_match.group(1)}-01-01" if year_match and count_only else None
         intersect = prior_ids if anaphora else None
+        # When user says "of them" but we only have dept/city memory (no IDs yet).
+        filters = scope_filters if (scoped_followup and not prior_ids) else None
         return _resume_search_plan(
             q,
             count_only=count_only and not hire_date_gt,
             hire_date_gt=hire_date_gt,
             intersect_with=intersect,
+            scope_filters=filters,
         )
 
     # Manager lookup
@@ -380,6 +440,7 @@ def try_heuristic_plan(
                 )
             ],
             response_strategy="llm_format",
+            active_cohort_node="sql1",
         )
 
     return None

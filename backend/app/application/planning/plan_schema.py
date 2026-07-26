@@ -19,3 +19,5 @@ class ExecutionPlan(BaseModel):
     nodes: list[PlanNode]
     response_strategy: Literal["template", "llm_format"] = "llm_format"
     clarify_question: str | None = None
+    # Node id whose output defines the active "them" cohort for the next turn.
+    active_cohort_node: str | None = None

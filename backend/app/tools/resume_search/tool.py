@@ -46,12 +46,20 @@ class ResumeSearchTool:
     async def run(self, params: dict[str, Any], *, auth: AuthContext) -> ToolResult:
         require_tool(auth, "resume_search")
         question = params.get("question") or params.get("query") or ""
+        # Optional cohort filter (SQL→RAG): only keep hits in this employee set.
+        scope_ids = {
+            str(x)
+            for x in (params.get("employee_ids") or [])
+            if x
+        }
+        scope_key = ",".join(sorted(scope_ids)[:80]) if scope_ids else ""
         key = cache_keys.build(
             "retrieval",
             auth,
             q=question,
             model=self._embeddings.model_name,
             top_k=self._top_k,
+            scope=scope_key,
         )
         cached = await self._cache.get(key)
         if cached is not None:
@@ -59,9 +67,13 @@ class ResumeSearchTool:
 
         try:
             emb = await self._embeddings.embed(question)
+            # Over-fetch when scoping so filtering still yields enough candidates.
+            fetch_k = self._top_k * 3 if scope_ids else self._top_k
             hits = await self._vector_store.similarity_search(
-                embedding=emb, top_k=self._top_k, tenant_id=auth.tenant_id
+                embedding=emb, top_k=fetch_k, tenant_id=auth.tenant_id
             )
+            if scope_ids:
+                hits = [h for h in hits if str(h.get("employee_id")) in scope_ids]
             ranked = rerank(question, hits, self._rerank_top_k)
             context = build_structured_context(ranked)
             await self._cache.set(key, context, ttl_seconds=self._cache_ttl)

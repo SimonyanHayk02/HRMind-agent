@@ -7,7 +7,9 @@ from app.adapters.embeddings.fake_embeddings import FakeEmbeddings
 from app.adapters.persistence.memory_session_store import MemorySessionStore
 from app.application.execution.graph_state import GraphState
 from app.application.memory.memory_service import MemoryService
-from app.application.memory.result_ids import extract_employee_ids_from_state
+from app.application.memory.result_ids import extract_cohort_ids, extract_employee_ids_from_state
+from app.application.memory.context_updates import extract_entities_from_state
+from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.response.response_formatter import _format_employee_rows
 from app.application.routing.embedding_router import EmbeddingRouter
 from app.application.routing.rule_router import RuleRouter
@@ -37,6 +39,58 @@ def test_extract_ids_from_resume_and_operator() -> None:
         "00000000-0000-0000-0000-000000000001",
         "00000000-0000-0000-0000-000000000002",
     ]
+
+
+def test_extract_cohort_prefers_intersect_not_union() -> None:
+    rag = "00000000-0000-0000-0000-000000000001"
+    prior = "00000000-0000-0000-0000-000000000002"
+    intersected = "00000000-0000-0000-0000-000000000003"
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(id="r1", kind="tool", name="resume_search", params={}),
+            PlanNode(id="ids", kind="operator", name="extract_employee_ids"),
+            PlanNode(id="ix", kind="operator", name="intersect_ids"),
+            PlanNode(id="sql1", kind="tool", name="sql", params={"count_only": True}),
+        ],
+        active_cohort_node="ix",
+    )
+    state = GraphState(
+        question="q",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "r1": ToolResult(data={"employee_ids": [rag, intersected], "hits": []}),
+            "ids": [rag, intersected],
+            "ix": [intersected],
+            "sql1": ToolResult(data={"count": 1, "rows": [{"count": 1}]}),
+        },
+    )
+    assert extract_cohort_ids(state, plan) == [intersected]
+    # Without plan, last non-empty wins — still should not invent a union across nodes
+    assert prior not in extract_cohort_ids(state, None)
+
+
+def test_entities_from_resume_hits() -> None:
+    state = GraphState(
+        question="q",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "r1": ToolResult(
+                data={
+                    "hits": [
+                        {
+                            "employee_id": "00000000-0000-0000-0000-000000000001",
+                            "employee_name": "Ada Lovelace",
+                            "snippets": [],
+                        }
+                    ],
+                    "employee_ids": ["00000000-0000-0000-0000-000000000001"],
+                }
+            )
+        },
+    )
+    ents = extract_entities_from_state(state)
+    assert len(ents) == 1
+    assert ents[0].display_name == "Ada Lovelace"
 
 
 def test_format_employee_rows() -> None:
@@ -112,7 +166,6 @@ async def test_redis_required_in_production_fails_loud(monkeypatch: pytest.Monke
 
 
 from app.application.memory.cohort import should_update_last_employee_ids
-from app.application.planning.plan_schema import ExecutionPlan, PlanNode
 from app.application.response.response_formatter import ResponseFormatter
 from app.adapters.llm.fake_llm import FakeLLM
 

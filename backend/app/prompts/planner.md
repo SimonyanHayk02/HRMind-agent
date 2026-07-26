@@ -4,7 +4,8 @@ Return ONLY valid JSON matching ExecutionPlan:
   "version": "1",
   "nodes": [{"id":"...","kind":"tool|operator","name":"...","input_bindings":{},"params":{},"depends_on":[]}],
   "response_strategy": "template|llm_format",
-  "clarify_question": null
+  "clarify_question": null,
+  "active_cohort_node": "id of the node whose employee IDs define 'them' for the next turn"
 }
 Rules:
 - Use tools: greeting, employee, sql, resume_search, clarify
@@ -14,6 +15,8 @@ Rules:
 - Prefer sql mode=constrained with filters when employee_ids are known
 - If the user asks about vacation, PTO, leave, benefits, payroll, bonus, visa, or other data not in employees/resumes, return nodes=[] and set clarify_question to explain you do not have that information (do not run sql)
 - Conversation context is provided as recent_messages, last_employee_ids, constraints, entities, summary
-- If the user refers to "them/those/of them/that group" and last_employee_ids is non-empty, scope sql filters.employee_ids to that set (or intersect_ids after resume_search)
+- If the user refers to "them/those/of them/that group" and last_employee_ids is non-empty, pass those IDs into resume_search.employee_ids AND/OR sql filters.employee_ids (or intersect_ids after resume_search)
+- When last_employee_ids is empty but constraints include department/city/country/position, apply those as sql filters while refining ("of them know python")
+- Set active_cohort_node to the final intersect/extract/sql-rows node (not the broad resume_search hit list)
 - Apply active constraints (department/city/skill) when refining a prior result set
 - For "say their names" / "list them", sql constrained over last_employee_ids with columns first_name, last_name, department, position

@@ -71,6 +71,18 @@ class ResponseFormatter:
         count_asked = is_count_question(question) or _plan_is_count_only(plan)
 
         if plan.response_strategy == "template":
+            # Prefer explicit count payloads when the question/plan is a count
+            # (cohort-materialization nodes may also return id rows).
+            if count_asked:
+                for p in reversed(payloads):
+                    if isinstance(p, dict) and p.get("count") is not None:
+                        return f"The answer is {p['count']}.", confidence, sources, None
+                    if (
+                        isinstance(p, dict)
+                        and "row_count" in p
+                        and "rows" not in p
+                    ):
+                        return f"The answer is {p['row_count']}.", confidence, sources, None
             for p in reversed(payloads):
                 if (
                     count_asked

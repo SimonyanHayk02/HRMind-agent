@@ -6,16 +6,19 @@ from app.domain.session import SessionMemory
 def test_engineering_count_plan() -> None:
     plan = try_heuristic_plan("How many employees work in Engineering?")
     assert plan is not None
-    assert plan.nodes[0].name == "sql"
+    assert [n.name for n in plan.nodes] == ["sql", "sql"]
+    assert plan.active_cohort_node == "cohort"
     assert plan.nodes[0].params["filters"]["department"] == "Engineering"
-    assert plan.nodes[0].params["count_only"] is True
+    assert plan.nodes[0].params["count_only"] is False
+    assert plan.nodes[1].params["count_only"] is True
     assert plan.response_strategy == "template"
 
 
 def test_who_knows_python_uses_resume_search() -> None:
     plan = try_heuristic_plan("Who knows Python?")
     assert plan is not None
-    assert [n.name for n in plan.nodes] == ["resume_search"]
+    assert [n.name for n in plan.nodes] == ["resume_search", "extract_employee_ids"]
+    assert plan.active_cohort_node == "ids"
 
 
 def test_how_many_know_python_counts_via_resume_ids() -> None:
@@ -86,7 +89,27 @@ def test_skill_of_them_intersects_prior_ids() -> None:
         "intersect_ids",
         "sql",
     ]
+    assert plan.nodes[0].params["employee_ids"] == ["00000000-0000-0000-0000-000000000001"]
     assert plan.nodes[2].params["other"] == ["00000000-0000-0000-0000-000000000001"]
+    assert plan.active_cohort_node == "ix"
+
+
+def test_skill_of_them_uses_constraint_memory_without_ids() -> None:
+    from app.domain.session import ConstraintRef
+
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        constraint_memory=[ConstraintRef(field="department", op="eq", value="Engineering")],
+    )
+    plan = try_heuristic_plan("how many of them know python", memory=memory)
+    assert plan is not None
+    assert [n.name for n in plan.nodes] == ["resume_search", "extract_employee_ids", "sql"]
+    assert plan.nodes[-1].params["filters"]["department"] == "Engineering"
+    assert plan.nodes[-1].params["count_only"] is True
+    assert "employee_ids" not in plan.nodes[0].params
 
 
 from app.application.planning.heuristic_planner import refers_to_prior_set, try_heuristic_plan

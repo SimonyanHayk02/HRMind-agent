@@ -143,9 +143,23 @@ def test_formatter_rejects_spurious_headcount_for_vacation() -> None:
             "how much vacation are developers taking?", plan, state
         )
 
-    answer, conf, _, _ = asyncio.run(_run())
+    answer, conf, _, clarify = asyncio.run(_run())
     assert "don't have that information" in answer.lower()
     assert "100" not in answer
+    assert clarify is None
+
+
+def test_unsupported_plan_does_not_duplicate_clarify() -> None:
+    formatter = ResponseFormatter(FakeLLM())
+    msg = "I don't have that information in the HR data I can access."
+    plan = ExecutionPlan(nodes=[], response_strategy="template", clarify_question=msg)
+    state = GraphState(
+        question="do we have information about the vacations ?",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+    )
+    answer, _, _, clarify = asyncio.run(formatter.format(state.question, plan, state))
+    assert answer == msg
+    assert clarify is None
 
 
 

@@ -24,7 +24,9 @@ class ResponseFormatter:
         self, question: str, plan: ExecutionPlan, state: GraphState
     ) -> tuple[str, float, list[SourceRef], str | None]:
         if plan.clarify_question:
-            return plan.clarify_question, 0.4, [], plan.clarify_question
+            # Empty-node plans are informational (e.g. unsupported topic), not UI clarifies.
+            clarify = None if not plan.nodes else plan.clarify_question
+            return plan.clarify_question, 0.4, [], clarify
 
         if is_unsupported_topic(question):
             return UNSUPPORTED_ANSWER, 0.4, [], None

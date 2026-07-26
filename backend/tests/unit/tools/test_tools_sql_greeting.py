@@ -23,7 +23,10 @@ def test_query_builder_ids() -> None:
         count_only=True,
     )
     assert "COUNT(*)" in sql
-    assert "employee_ids" in params
+    assert "eid_0" in params
+    assert params["eid_0"] == "00000000-0000-0000-0000-000000000099"
+    assert ":eid_0" in sql
+    assert "hire_date_gt" in params
 
 
 def test_sql_validator_rejects_drop() -> None:

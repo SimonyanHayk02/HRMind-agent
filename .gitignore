@@ -1,0 +1,26 @@
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Secrets / local env
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Local generated resume binaries (JSON seed can be committed)
+backend/data/seed/resumes/*.pdf
+backend/data/seed/resumes/*.docx

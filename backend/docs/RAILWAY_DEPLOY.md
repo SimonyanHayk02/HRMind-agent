@@ -48,7 +48,7 @@ Deploys are triggered by GitHub Actions **after tests pass on `main`** (see `.gi
 1. In Railway → your **project** → **Settings** → **Tokens** → create a **Project Token** (scoped to the production environment).
 2. In GitHub → repo **Settings** → **Secrets and variables** → **Actions**, add:
    - `RAILWAY_TOKEN` — the project token (required)
-   - `RAILWAY_SERVICE_ID` — the API/web service id or name (required if the project has more than one service; find it under the service → Settings → copy ID, or use the service name)
+   - `RAILWAY_SERVICE_ID` — the **API/web** service name or ID (**required**; do not use Redis). Railway → click the API service → **Settings** → copy **Service ID**, or paste the exact service name shown in the dashboard
 3. To avoid **double deploys**, in the Railway web service → **Settings** → **Source**:
    - turn **off** “Wait for CI” if you use Actions deploy, **or**
    - disconnect / disable automatic deploys on push and let Actions be the only deployer

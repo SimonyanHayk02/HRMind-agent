@@ -40,14 +40,19 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
         run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
+          set -euo pipefail
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
             echo "::error::Missing GitHub secret RAILWAY_TOKEN (Railway Project Token)."
-            echo "Create one: Railway project → Settings → Tokens → Project Token"
-            echo "Then: GitHub repo → Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
-          args=(up --ci --detach)
-          if [ -n "$RAILWAY_SERVICE_ID" ]; then
-            args+=(--service "$RAILWAY_SERVICE_ID")
+          if [ -z "${RAILWAY_SERVICE_ID:-}" ]; then
+            echo "::error::Missing GitHub secret RAILWAY_SERVICE_ID."
+            echo "Your Railway project has multiple services (e.g. API + Redis)."
+            echo "Add secret RAILWAY_SERVICE_ID = the API/web service name or ID."
+            echo "Find it: Railway → API service → Settings → copy Service ID (or use the service name)."
+            echo "Listing project services (if token allows):"
+            railway status --json || true
+            exit 1
           fi
-          railway "${args[@]}"
+          echo "Deploying to service: $RAILWAY_SERVICE_ID"
+          railway up --ci --detach --service "$RAILWAY_SERVICE_ID"

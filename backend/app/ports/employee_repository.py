@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+from typing import Protocol
+from uuid import UUID
+
+from app.domain.employee import Employee
+
+
+class EmployeeRepository(Protocol):
+    async def get_by_id(self, employee_id: UUID) -> Employee | None: ...
+
+    async def get_by_email(self, email: str) -> Employee | None: ...
+
+    async def search_by_name(self, query: str, *, limit: int = 10) -> list[Employee]: ...
+
+    async def list_by_department(self, department: str) -> list[Employee]: ...
+
+    async def get_manager_chain(self, employee_id: UUID, *, max_depth: int = 5) -> list[Employee]: ...
+
+    async def list_all(self, *, limit: int = 500) -> list[Employee]: ...

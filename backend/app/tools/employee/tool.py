@@ -139,9 +139,10 @@ class EmployeeTool:
         if params.get("employee_id"):
             emp = await employees.get_by_id(UUID(str(params["employee_id"])))
         else:
+            question = params.get("question") or ""
             name = (
                 params.get("name")
-                or extract_manager_subject(params.get("question") or "")
+                or extract_manager_subject(question)
                 or ""
             )
             if not name:
@@ -149,14 +150,19 @@ class EmployeeTool:
                     data={"clarify": "Which employee’s manager should I look up?"},
                     confidence=0.4,
                 )
-            resolved = await self._resolve_by_name(employees, auth, name=name)
+            dept = (
+                params.get("department")
+                or _dept_from_text(question)
+                or _dept_from_text(name)
+            )
+            resolved = await self._resolve_by_name(
+                employees, auth, name=name, department=dept
+            )
             if resolved.data and isinstance(resolved.data, dict) and resolved.data.get("clarify"):
                 return resolved
             if resolved.data and isinstance(resolved.data, dict) and resolved.data.get("id"):
                 emp = await employees.get_by_id(UUID(str(resolved.data["id"])))
-            elif not resolved.data or (
-                isinstance(resolved.data, dict) and not resolved.data.get("employees")
-            ):
+            else:
                 return ToolResult(
                     data={"clarify": f"I couldn't find an employee named '{name}'."},
                     confidence=0.3,

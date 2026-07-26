@@ -219,10 +219,14 @@ def _employee_by_name_plan(name: str, *, department: str | None = None) -> Execu
     )
 
 
-def _manager_plan(question: str, *, name: str | None = None) -> ExecutionPlan:
+def _manager_plan(
+    question: str, *, name: str | None = None, department: str | None = None
+) -> ExecutionPlan:
     params: dict = {"action": "manager", "question": question}
     if name:
         params["name"] = name
+    if department:
+        params["department"] = department
     return ExecutionPlan(
         nodes=[
             PlanNode(id="e1", kind="tool", name="employee", params=params),
@@ -528,7 +532,7 @@ def try_heuristic_plan(
     # Manager lookup (before generic analytics)
     mgr_name = extract_manager_subject(q)
     if mgr_name or re.search(r"\b(manager of|'s manager|who manages)\b", lower):
-        return _manager_plan(q, name=mgr_name or entity_name)
+        return _manager_plan(q, name=mgr_name or entity_name, department=dept_hint)
 
     focus = memory.last_focus if memory else None
 

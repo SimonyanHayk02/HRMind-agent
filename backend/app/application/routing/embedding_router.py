@@ -19,6 +19,8 @@ NEEDS_TOOLS_EXAMPLES = [
     "who is alice's manager",
     "show employees hired after 2023",
     "search resumes for kubernetes",
+    "where does ivy chen live",
+    "what city is bob based in",
 ]
 
 _HR_HINTS = re.compile(
@@ -27,7 +29,8 @@ _HR_HINTS = re.compile(
     r"manager|salary|hired|hire|resume|skill|skills|developer|headcount|count|"
     r"how many|how much|python|kubernetes|aws|berlin|dubai|roster|profile|"
     r"who|about|tell me|find|search|list|show|names?|them|those|their|there|"
-    r"of them|of those|among them|name them|say their"
+    r"of them|of those|among them|name them|say their|"
+    r"where|live|lives|living|located|location|city|country|based|address"
     r")\b",
     re.I,
 )

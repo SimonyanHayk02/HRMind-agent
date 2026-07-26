@@ -89,7 +89,37 @@ def test_skill_of_them_intersects_prior_ids() -> None:
     assert plan.nodes[2].params["other"] == ["00000000-0000-0000-0000-000000000001"]
 
 
-def test_vacation_is_unsupported() -> None:
+from app.application.planning.heuristic_planner import refers_to_prior_set, try_heuristic_plan
+from app.domain.enums import Role
+from app.domain.session import EntityRef, SessionMemory
+from uuid import UUID
+
+
+def test_where_ivy_chen_lives_uses_employee_lookup() -> None:
+    plan = try_heuristic_plan("where the ivy chen lives?")
+    assert plan is not None
+    assert plan.nodes[0].name == "employee"
+    assert plan.nodes[0].params["action"] == "by_name"
+    assert "ivy chen" in plan.nodes[0].params["name"].lower()
+
+
+def test_where_lives_uses_entity_memory_name() -> None:
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        entity_memory=[
+            EntityRef(
+                employee_id=UUID("00000000-0000-0000-0000-000000000001"),
+                display_name="Ivy Chen",
+            )
+        ],
+    )
+    plan = try_heuristic_plan("where does ivy live?", memory=memory)
+    assert plan is not None
+    assert plan.nodes[0].params["name"] == "Ivy Chen"
+
     plan = try_heuristic_plan("got it, so how much vacation are taking the developers?")
     assert plan is not None
     assert plan.nodes == []

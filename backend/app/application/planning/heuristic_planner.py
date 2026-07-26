@@ -52,12 +52,66 @@ _FOLLOWUP_NAMES_RE = re.compile(
     re.I,
 )
 _CITY_RE = re.compile(r"\b(?:in|from)\s+(Berlin|Dubai|London|Paris|New York)\b", re.I)
+_PERSON_LOCATION_RE = re.compile(
+    r"\bwhere\s+(?:(?:does|do|is)\s+)?(?:the\s+)?"
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)"
+    r"\s+(?:live|lives|living|located|from|based)\b",
+    re.I,
+)
+_ABOUT_PERSON_RE = re.compile(
+    r"(?:tell me about|who is|what about|profile of)\s+"
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)",
+    re.I,
+)
 
 _NAME_COLUMNS = ["id", "first_name", "last_name", "department", "position"]
 
 
 def refers_to_prior_set(question: str) -> bool:
     return bool(_ANAPHORA_RE.search(question) or _FOLLOWUP_NAMES_RE.search(question))
+
+
+def _employee_by_name_plan(name: str) -> ExecutionPlan:
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="e1",
+                kind="tool",
+                name="employee",
+                params={"action": "by_name", "name": name.strip()},
+            )
+        ],
+        response_strategy="llm_format",
+    )
+
+
+def _match_entity_name(question: str, memory: SessionMemory | None) -> str | None:
+    if not memory or not memory.entity_memory:
+        return None
+    lower = question.lower()
+    entities = sorted(memory.entity_memory, key=lambda e: len(e.display_name), reverse=True)
+    # Exact full-name / alias containment first
+    for ent in entities:
+        name = ent.display_name.strip()
+        if name and name.lower() in lower:
+            return name
+        for alias in ent.aliases:
+            if alias and alias.lower() in lower:
+                return name or alias
+    # First/last token match when unique among remembered people
+    token_hits: dict[str, list[str]] = {}
+    for ent in entities:
+        name = ent.display_name.strip()
+        for token in name.lower().split():
+            if len(token) < 2:
+                continue
+            if re.search(rf"\b{re.escape(token)}\b", lower):
+                token_hits.setdefault(token, []).append(name)
+    for names in token_hits.values():
+        uniq = list(dict.fromkeys(names))
+        if len(uniq) == 1:
+            return uniq[0]
+    return None
 
 
 def _sql_over_ids(
@@ -178,6 +232,20 @@ def try_heuristic_plan(
             clarify_question=UNSUPPORTED_ANSWER,
         )
 
+    # Named person from prior result set ("where ivy chen lives?")
+    entity_name = _match_entity_name(q, memory)
+    if entity_name and (
+        _PERSON_LOCATION_RE.search(q)
+        or any(w in lower for w in ("live", "lives", "living", "located", "city", "country", "based"))
+        or _ABOUT_PERSON_RE.search(q)
+    ):
+        return _employee_by_name_plan(entity_name)
+
+    # "where does Ivy Chen live?" / "where the ivy chen lives"
+    loc = _PERSON_LOCATION_RE.search(q)
+    if loc:
+        return _employee_by_name_plan(loc.group(1))
+
     # Follow-up: list names of the active result set
     if prior_ids and _FOLLOWUP_NAMES_RE.search(q):
         return _sql_over_ids(prior_ids, count_only=False)
@@ -277,25 +345,10 @@ def try_heuristic_plan(
             response_strategy="llm_format",
         )
 
-    # "Tell me about Bob" / "Who is Alice?"
-    about = re.search(
-        r"(?:tell me about|who is|what about|profile of)\s+([A-Za-z][A-Za-z\-']+)",
-        q,
-        re.I,
-    )
+    # "Tell me about Bob" / "Who is Alice Nguyen?"
+    about = _ABOUT_PERSON_RE.search(q)
     if about:
-        name = about.group(1)
-        return ExecutionPlan(
-            nodes=[
-                PlanNode(
-                    id="e1",
-                    kind="tool",
-                    name="employee",
-                    params={"action": "by_name", "name": name},
-                )
-            ],
-            response_strategy="llm_format",
-        )
+        return _employee_by_name_plan(about.group(1))
 
     # Generic structured employee analytics
     if any(
@@ -308,6 +361,13 @@ def try_heuristic_plan(
             "headcount",
             "how many",
             "count",
+            "where",
+            "live",
+            "lives",
+            "living",
+            "located",
+            "city",
+            "country",
         )
     ):
         return ExecutionPlan(

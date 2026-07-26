@@ -111,6 +111,42 @@ async def test_redis_required_in_production_fails_loud(monkeypatch: pytest.Monke
         )
 
 
+from app.application.memory.cohort import should_update_last_employee_ids
+from app.application.planning.plan_schema import ExecutionPlan, PlanNode
+
+
+def test_cohort_rejects_unscoped_headcount() -> None:
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={"mode": "nl2sql", "count_only": False, "question": "how many"},
+            )
+        ]
+    )
+    ids = [f"00000000-0000-0000-0000-{i:012d}" for i in range(100)]
+    assert not should_update_last_employee_ids(plan, "How many employees do we have?", ids)
+
+
+def test_cohort_keeps_resume_matches() -> None:
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(id="r1", kind="tool", name="resume_search", params={}),
+            PlanNode(
+                id="sql1",
+                kind="tool",
+                name="sql",
+                params={"mode": "constrained", "count_only": True, "filters": {}},
+                input_bindings={"employee_ids": "nodes.ids"},
+            ),
+        ]
+    )
+    ids = ["00000000-0000-0000-0000-000000000001"]
+    assert should_update_last_employee_ids(plan, "how many know python", ids)
+
+
 @pytest.mark.asyncio
 async def test_session_tenant_mismatch_forbidden() -> None:
     store = MemorySessionStore()

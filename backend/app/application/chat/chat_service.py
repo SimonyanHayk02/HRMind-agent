@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from app.api.schemas.chat import ChatRequest, ChatResponse
 from app.application.execution.langgraph_executor import LangGraphExecutor
+from app.application.memory.cohort import should_update_last_employee_ids
 from app.application.memory.context_updates import (
     extract_entities_from_state,
     infer_constraints_from_question,
@@ -87,7 +88,7 @@ class ChatService:
         state = await self._executor.execute(plan, question=body.question, auth=auth)
 
         ids = extract_employee_ids_from_state(state)
-        if ids:
+        if ids and should_update_last_employee_ids(plan, body.question, ids):
             session = await self._memory.set_last_employee_ids(session, ids)
 
         entities = extract_entities_from_state(state)

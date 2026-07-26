@@ -21,9 +21,14 @@ _SKILLS = (
 )
 
 _SKILL_RE = re.compile(rf"\b({_SKILLS})\b", re.I)
+# Broad skill context — includes "developing", not only "developer"
 _SKILL_INTENT_RE = re.compile(
-    r"\b(knows?|knowing|experience|experienced|skill|skills|proficient|"
-    r"familiar|resume|developer|find|search|with)\b",
+    r"\b("
+    r"knows?|knowing|experience|experienced|skill|skills|proficient|familiar|"
+    r"resume|develop(?:er|ers|ing|ed)?|coding|code|programm(?:er|ers|ing|ed)?|"
+    r"using|uses|used|stack|find|search|with|who|"
+    r"how many|how much|employee|employees|people|staff|them|those"
+    r")\b",
     re.I,
 )
 _COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
@@ -159,6 +164,9 @@ def try_heuristic_plan(
     q = question.strip()
     lower = q.lower()
     prior_ids = list(memory.last_employee_ids) if memory and memory.last_employee_ids else []
+    # Full-company dumps are not a meaningful "them" cohort
+    if len(prior_ids) > 50:
+        prior_ids = []
     anaphora = bool(prior_ids) and refers_to_prior_set(q)
 
     # Follow-up: list names of the active result set
@@ -231,7 +239,8 @@ def try_heuristic_plan(
             response_strategy="template",
         )
 
-    # Resume / skills search — intersect prior set when anaphoric
+    # Resume / skills search — intersect prior set when anaphoric.
+    # Skill token + any skill/HR context word is enough (covers "developing in python").
     skill_match = _SKILL_RE.search(q)
     if skill_match and _SKILL_INTENT_RE.search(q):
         year_match = re.search(r"(?:after|since)\s+(20\d{2})", lower)

@@ -15,6 +15,7 @@ from app.application.planning.heuristic_planner import (
     _pronoun_clarify_plan,
     _resolve_pronoun_employee_id,
     try_heuristic_plan,
+    wants_person_lookup,
 )
 from app.application.planning.plan_schema import ExecutionPlan
 from app.application.schema.catalog_service import CatalogService
@@ -117,11 +118,7 @@ class PlanCompiler:
                 return plan, "heuristic_meta_count"
 
         pronoun_id = _resolve_pronoun_employee_id(q, memory)
-        if _PRONOUN_ONLY_RE.search(q) and re.search(
-            r"\b(live|lives|living|located|based|about|where|manager|profile)\b",
-            q,
-            re.I,
-        ):
+        if _PRONOUN_ONLY_RE.search(q) and wants_person_lookup(q):
             # Bare pronoun person questions — never treat "she"/"he" as a name.
             has_proper_name = bool(
                 re.search(
@@ -135,6 +132,12 @@ class PlanCompiler:
                 if memory and len(memory.entity_memory) == 1:
                     return (
                         _employee_by_id_plan(str(memory.entity_memory[0].employee_id)),
+                        "heuristic_pronoun",
+                    )
+                # Prefer the most recently mentioned named person when several exist
+                if memory and memory.entity_memory:
+                    return (
+                        _employee_by_id_plan(str(memory.entity_memory[-1].employee_id)),
                         "heuristic_pronoun",
                     )
                 return _pronoun_clarify_plan(), "heuristic_pronoun"

@@ -439,10 +439,31 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
             if loc:
                 return f"{name} lives in {loc}."
             return f"I don't have a location on file for {name}."
+        if any(w in q for w in ("education", "degree", "school", "university", "college")):
+            edu = data.get("education")
+            if edu:
+                return f"{name}'s education is {edu}."
+            return f"I don't have education on file for {name}."
+        if any(w in q for w in ("title", "position", "role", "job")):
+            pos = data.get("position")
+            if pos:
+                return f"{name}'s job title is {pos}."
+            return f"I don't have a job title on file for {name}."
+        if any(w in q for w in ("email", "e-mail", "mail")):
+            email = data.get("email")
+            if email:
+                return f"{name}'s email is {email}."
+            return f"I don't have an email on file for {name}."
+        if "department" in q or "team" in q:
+            dept = data.get("department")
+            if dept:
+                return f"{name} works in {dept}."
+            return f"I don't have a department on file for {name}."
         bits = [name]
         for label, key in (
             ("Position", "position"),
             ("Department", "department"),
+            ("Education", "education"),
             ("Location", None),
             ("Email", "email"),
             ("Status", "employment_status"),

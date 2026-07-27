@@ -47,6 +47,18 @@ _META_COUNT_RE = re.compile(
     re.I,
 )
 _PRONOUN_ONLY_RE = re.compile(r"\b(she|he|her|him|his|hers)\b", re.I)
+_PERSON_ATTR_RE = re.compile(
+    r"\b("
+    r"live|lives|living|located|based|about|profile|manager|"
+    r"education|degree|school|university|college|"
+    r"title|position|role|job|"
+    r"email|e-?mail|mail|"
+    r"department|team|"
+    r"status|hired|hire|phone|mobile|"
+    r"where"
+    r")\b",
+    re.I,
+)
 _WHICH_OF_THEM_SKILL_RE = re.compile(
     r"\bwhich of them\s+(?:know|knows|have|has)\b",
     re.I,
@@ -318,6 +330,22 @@ def _resolve_pronoun_employee_id(
         if re.search(rf"\b{key}\b", lower) and key in memory.person_bindings:
             return str(memory.person_bindings[key])
     return None
+
+
+def wants_person_lookup(question: str) -> bool:
+    """True when the question is asking about a specific person's profile attributes."""
+    q = (question or "").strip()
+    lower = q.lower()
+    if _PERSON_LOCATION_RE.search(q) or _ABOUT_PERSON_RE.search(q):
+        return True
+    if _PERSON_ATTR_RE.search(q):
+        return True
+    # Possessive attribute: "her job", "his email", "what's her …"
+    if re.search(r"\b(her|his)\s+\w+", lower):
+        return True
+    if re.search(r"\b(?:what|where|who)\b.*\b(she|he|her|him)\b", lower):
+        return True
+    return False
 
 
 def _pronoun_clarify_plan() -> ExecutionPlan:
@@ -631,27 +659,15 @@ def try_heuristic_plan(
         return _meta_count_plan(memory)
 
     pronoun_id = _resolve_pronoun_employee_id(q, memory)
-    wants_person = bool(
-        _PERSON_LOCATION_RE.search(q)
-        or _ABOUT_PERSON_RE.search(q)
-        or re.search(
-            r"\b(live|lives|living|located|based|about|profile|manager)\b",
-            lower,
-        )
-        or re.search(r"\bwhere\s+(?:does|is)\s+(?:she|he)\b", lower)
-    )
+    wants_person = wants_person_lookup(q)
 
     # Named person from prior result set ("where ivy chen lives?")
     entity_name = _match_entity_name(q, memory)
     dept_hint = _dept_hint(q)
-    if entity_name and (
-        _PERSON_LOCATION_RE.search(q)
-        or any(w in lower for w in ("live", "lives", "living", "located", "city", "country", "based"))
-        or _ABOUT_PERSON_RE.search(q)
-    ):
+    if entity_name and wants_person:
         return _employee_by_name_plan(entity_name, department=dept_hint)
 
-    # Pronoun person questions ("where does she live?") — never by_name("she")
+    # Pronoun person questions ("where does she live?", "her job title") — never by_name("she")
     if wants_person and _PRONOUN_ONLY_RE.search(q):
         # Prefer explicit name tokens over pure pronouns when both appear
         loc = _PERSON_LOCATION_RE.search(q)
@@ -671,6 +687,8 @@ def try_heuristic_plan(
             return _employee_by_id_plan(pronoun_id)
         if memory and len(memory.entity_memory) == 1:
             return _employee_by_id_plan(str(memory.entity_memory[0].employee_id))
+        if memory and memory.entity_memory:
+            return _employee_by_id_plan(str(memory.entity_memory[-1].employee_id))
         return _pronoun_clarify_plan()
 
     # "where does Ivy Chen live?" / "where the ivy chen lives"

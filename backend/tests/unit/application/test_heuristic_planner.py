@@ -317,6 +317,28 @@ def test_pronoun_location_without_binding_clarifies() -> None:
     assert "which employee" in plan.clarify_question.lower()
 
 
+def test_pronoun_education_and_title_use_binding() -> None:
+    eid = UUID("00000000-0000-0000-0000-000000000099")
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        person_bindings={"she": str(eid), "her": str(eid)},
+    )
+    for q in (
+        "what education does she have",
+        "whats her job title?",
+        "what is her email",
+        "what department is she in",
+    ):
+        plan = try_heuristic_plan(q, memory=memory)
+        assert plan is not None, q
+        assert plan.nodes[0].name == "employee", q
+        assert plan.nodes[0].params.get("action") == "by_id", q
+        assert str(plan.nodes[0].params.get("employee_id")) == str(eid), q
+
+
 def test_which_of_them_know_is_count() -> None:
     memory = _memory_with_ids("00000000-0000-0000-0000-000000000001")
     plan = try_heuristic_plan("which of them know Kubernetes?", memory=memory)

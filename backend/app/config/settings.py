@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     max_history: int = 20
     max_context: int = 8
     summary_trigger: int = 12
+    max_ids_in_packet: int = 20
+    max_entity_memory: int = 50
+    max_summary_chars: int = 2000
+    tool_fact_ttl_seconds: int = 180
     sql_cache_ttl: int = 60
     retrieval_cache_ttl: int = 1800
     plan_cache_ttl: int = 900

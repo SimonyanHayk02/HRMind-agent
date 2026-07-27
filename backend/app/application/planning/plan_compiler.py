@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from app.application.planning.heuristic_planner import try_heuristic_plan
+from app.application.planning.heuristic_planner import (
+    _META_COUNT_RE,
+    _PRONOUN_ONLY_RE,
+    _employee_by_id_plan,
+    _meta_count_plan,
+    _pronoun_clarify_plan,
+    _resolve_pronoun_employee_id,
+    try_heuristic_plan,
+)
 from app.application.planning.plan_schema import ExecutionPlan
 from app.application.schema.catalog_service import CatalogService
 from app.application.understanding.extract_query_state import extract_query_state
@@ -16,7 +26,9 @@ from app.domain.query_state import QueryState
 from app.domain.schema_catalog import default_employee_catalog
 from app.domain.session import SessionMemory
 from app.domain.tools.registry import ToolRegistry
-from app.ports.llm import LLMClient
+
+if TYPE_CHECKING:
+    from app.application.memory.context_manager import ContextManager
 
 logger = get_logger(__name__)
 
@@ -30,7 +42,7 @@ _CLARIFY_FALLBACK = (
 class PlanCompiler:
     def __init__(
         self,
-        llm: LLMClient,
+        llm,
         tools: ToolRegistry,
         prompts_dir: Path | None = None,
         *,
@@ -63,35 +75,29 @@ class PlanCompiler:
         auth: AuthContext,
         memory: SessionMemory | None,
         query_state: QueryState | None = None,
+        context_manager: ContextManager | None = None,
     ) -> dict:
-        recent: list[dict[str, str]] = []
-        entities: list[dict] = []
-        constraints: list[dict] = []
-        last_ids: list[str] = []
-        summary = ""
-        last_focus: dict | None = None
-        if memory:
-            for msg in memory.messages[-self._max_context :]:
-                recent.append({"role": msg.role, "content": msg.content[:800]})
-            entities = [e.model_dump(mode="json") for e in memory.entity_memory[-20:]]
-            constraints = [c.model_dump(mode="json") for c in memory.constraint_memory]
-            last_ids = list(memory.last_employee_ids)
-            summary = memory.summary or ""
-            if memory.last_focus:
-                last_focus = memory.last_focus.model_dump(mode="json")
-        return {
-            "question": question,
-            "role": auth.role.value,
-            "tools": self._tools.discover(),
-            "schema_catalog": self._catalog_view(),
-            "query_state": query_state.model_dump(mode="json") if query_state else None,
-            "recent_messages": recent,
-            "last_employee_ids": last_ids,
-            "last_focus": last_focus,
-            "constraints": constraints,
-            "entities": entities,
-            "summary": summary,
-        }
+        if context_manager is not None and memory is not None:
+            return context_manager.build_for_planner(
+                question=question,
+                auth=auth,
+                memory=memory,
+                tools=self._tools.discover(),
+                schema_catalog=self._catalog_view(),
+                query_state=query_state,
+            )
+        # Fallback (tests without ContextManager)
+        from app.application.memory.context_budget import build_planner_packet
+
+        return build_planner_packet(
+            question=question,
+            auth=auth,
+            memory=memory,
+            tools=self._tools.discover(),
+            schema_catalog=self._catalog_view(),
+            query_state=query_state.model_dump(mode="json") if query_state else None,
+            max_context=self._max_context,
+        )
 
     async def compile(
         self,
@@ -99,26 +105,59 @@ class PlanCompiler:
         *,
         auth: AuthContext,
         memory: SessionMemory | None = None,
-    ) -> ExecutionPlan:
+        context_manager: ContextManager | None = None,
+    ) -> tuple[ExecutionPlan, str]:
+        """Compile a plan. Returns (plan, planner_mode)."""
+        q = (question or "").strip()
+
+        # Deterministic escapes that must beat QueryState / nl2sql.
+        if _META_COUNT_RE.search(q):
+            plan = _meta_count_plan(memory)
+            if plan is not None:
+                return plan, "heuristic_meta_count"
+
+        pronoun_id = _resolve_pronoun_employee_id(q, memory)
+        if _PRONOUN_ONLY_RE.search(q) and re.search(
+            r"\b(live|lives|living|located|based|about|where|manager|profile)\b",
+            q,
+            re.I,
+        ):
+            # Bare pronoun person questions — never treat "she"/"he" as a name.
+            has_proper_name = bool(
+                re.search(
+                    r"\bwhere\s+(?:does|is)\s+(?!she\b|he\b|her\b|him\b)([A-Z][a-z]+)",
+                    q,
+                )
+            )
+            if not has_proper_name:
+                if pronoun_id:
+                    return _employee_by_id_plan(pronoun_id), "heuristic_pronoun"
+                if memory and len(memory.entity_memory) == 1:
+                    return (
+                        _employee_by_id_plan(str(memory.entity_memory[0].employee_id)),
+                        "heuristic_pronoun",
+                    )
+                return _pronoun_clarify_plan(), "heuristic_pronoun"
+
         catalog = self._catalog.get() if self._catalog else default_employee_catalog()
         query_state = extract_query_state(question, catalog=catalog, memory=memory)
 
-        # Prefer QueryState even at moderate confidence when filters are grounded.
         structured = plan_from_query_state(query_state, memory=memory)
         if structured is None and query_state.filters:
             structured = plan_from_query_state(
                 query_state, memory=memory, min_confidence=0.5
             )
         if structured is not None:
-            return structured
+            return structured, "query_state"
 
         heuristic = try_heuristic_plan(question, memory=memory)
         if heuristic is not None:
-            return heuristic
+            return heuristic, "heuristic"
 
-        user = json.dumps(
-            self._context_packet(question, auth, memory, query_state), default=str
+        packet = self._context_packet(
+            question, auth, memory, query_state, context_manager
         )
+        user = json.dumps(packet, default=str)
         try:
             raw = await self._llm.complete(
                 system=self._load_prompt(), user=user, temperature=0.0, response_json=True
@@ -129,16 +168,20 @@ class PlanCompiler:
                 if raw.startswith("json"):
                     raw = raw[4:].strip()
             data = json.loads(raw)
-            return ExecutionPlan.model_validate(data)
+            return ExecutionPlan.model_validate(data), "llm"
         except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
             logger.warning(
                 "planner_llm_invalid_plan",
                 question=question[:200],
                 error_type=type(exc).__name__,
                 error=str(exc)[:400],
+                approx_tokens=packet.get("approx_tokens"),
             )
-            return ExecutionPlan(
-                nodes=[],
-                response_strategy="template",
-                clarify_question=_CLARIFY_FALLBACK,
+            return (
+                ExecutionPlan(
+                    nodes=[],
+                    response_strategy="template",
+                    clarify_question=_CLARIFY_FALLBACK,
+                ),
+                "llm",
             )

@@ -36,11 +36,29 @@ _SKILL_INTENT_RE = re.compile(
     re.I,
 )
 _COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+_META_COUNT_RE = re.compile(
+    r"\b("
+    r"how many was that(?: again)?|"
+    r"what was (?:the|that) (?:count|number|total)|"
+    r"(?:repeat|remind me of|recall) (?:the|that) (?:count|number)|"
+    r"(?:same|that) (?:count|number) again|"
+    r"how many (?:was|were) (?:there|that)"
+    r")\b",
+    re.I,
+)
+_PRONOUN_ONLY_RE = re.compile(r"\b(she|he|her|him|his|hers)\b", re.I)
+_WHICH_OF_THEM_SKILL_RE = re.compile(
+    r"\bwhich of them\s+(?:know|knows|have|has)\b",
+    re.I,
+)
 _ANAPHORA_RE = re.compile(
     r"\b("
     r"of them|of those|from them|from those|among them|among those|"
-    r"that group|those employees|these employees|"
-    r"the (previous|last|same) (set|group|list|results?)"
+    r"that group|those employees|these employees|that (?:\d+\s+)?employees?|"
+    r"from that (?:\d+\s+)?employees?|of that (?:\d+\s+)?(?:group|set|employees?)|"
+    r"the (previous|last|same) (set|group|list|results?)|"
+    r"which of them|which ones?(?:\s+know|\s+have|\s+joined)?|"
+    r"do (?:any|they|those) (?:of them )?"
     r")\b",
     re.I,
 )
@@ -165,6 +183,7 @@ def refers_to_prior_set(question: str) -> bool:
         _ANAPHORA_RE.search(q)
         or _FOLLOWUP_NAMES_RE.search(q)
         or _SHORT_LIST_RE.search(q)
+        or _META_COUNT_RE.search(q)
     )
 
 
@@ -245,6 +264,70 @@ def _employee_by_name_plan(name: str, *, department: str | None = None) -> Execu
         ],
         response_strategy="template",
         active_cohort_node="e1",
+    )
+
+
+def _employee_by_id_plan(employee_id: str) -> ExecutionPlan:
+    return ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="e1",
+                kind="tool",
+                name="employee",
+                params={"action": "by_id", "employee_id": str(employee_id)},
+            )
+        ],
+        response_strategy="template",
+        active_cohort_node="e1",
+    )
+
+
+def _meta_count_plan(memory: SessionMemory | None) -> ExecutionPlan | None:
+    """Answer 'how many was that again?' from tool_fact_cache or prior cohort — never nl2sql."""
+    if memory and memory.tool_fact_cache.get("last_count") is not None:
+        value = memory.tool_fact_cache["last_count"].value
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            n = value
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question=f"The answer is {n}.",
+        )
+    prior = list(memory.last_employee_ids) if memory and memory.last_employee_ids else []
+    if prior and len(prior) <= 50:
+        return _sql_over_ids(prior, count_only=True)
+    return ExecutionPlan(
+        nodes=[],
+        response_strategy="template",
+        clarify_question=(
+            "I don't have a previous count in this conversation. "
+            "Ask a headcount question first, then I can repeat it."
+        ),
+    )
+
+
+def _resolve_pronoun_employee_id(
+    question: str, memory: SessionMemory | None
+) -> str | None:
+    if not memory or not memory.person_bindings:
+        return None
+    lower = question.lower()
+    for key in ("she", "he", "her", "him", "his", "hers"):
+        if re.search(rf"\b{key}\b", lower) and key in memory.person_bindings:
+            return str(memory.person_bindings[key])
+    return None
+
+
+def _pronoun_clarify_plan() -> ExecutionPlan:
+    return ExecutionPlan(
+        nodes=[],
+        response_strategy="template",
+        clarify_question=(
+            "Which employee do you mean? Tell me their name "
+            "(or pick one from the previous options)."
+        ),
     )
 
 
@@ -543,6 +626,21 @@ def try_heuristic_plan(
             clarify_question=UNSUPPORTED_ANSWER,
         )
 
+    # Meta-count: "how many was that again?" — use cached count / prior cohort, never nl2sql
+    if _META_COUNT_RE.search(q):
+        return _meta_count_plan(memory)
+
+    pronoun_id = _resolve_pronoun_employee_id(q, memory)
+    wants_person = bool(
+        _PERSON_LOCATION_RE.search(q)
+        or _ABOUT_PERSON_RE.search(q)
+        or re.search(
+            r"\b(live|lives|living|located|based|about|profile|manager)\b",
+            lower,
+        )
+        or re.search(r"\bwhere\s+(?:does|is)\s+(?:she|he)\b", lower)
+    )
+
     # Named person from prior result set ("where ivy chen lives?")
     entity_name = _match_entity_name(q, memory)
     dept_hint = _dept_hint(q)
@@ -552,6 +650,28 @@ def try_heuristic_plan(
         or _ABOUT_PERSON_RE.search(q)
     ):
         return _employee_by_name_plan(entity_name, department=dept_hint)
+
+    # Pronoun person questions ("where does she live?") — never by_name("she")
+    if wants_person and _PRONOUN_ONLY_RE.search(q):
+        # Prefer explicit name tokens over pure pronouns when both appear
+        loc = _PERSON_LOCATION_RE.search(q)
+        captured = (loc.group(1) if loc else "").strip()
+        if captured and captured.lower() not in {
+            "she",
+            "he",
+            "her",
+            "him",
+            "his",
+            "hers",
+            "they",
+            "them",
+        }:
+            return _employee_by_name_plan(captured, department=dept_hint)
+        if pronoun_id:
+            return _employee_by_id_plan(pronoun_id)
+        if memory and len(memory.entity_memory) == 1:
+            return _employee_by_id_plan(str(memory.entity_memory[0].employee_id))
+        return _pronoun_clarify_plan()
 
     # "where does Ivy Chen live?" / "where the ivy chen lives"
     loc = _PERSON_LOCATION_RE.search(q)
@@ -770,7 +890,8 @@ def try_heuristic_plan(
     skill_match = _SKILL_RE.search(q)
     if skill_match and _SKILL_INTENT_RE.search(q):
         year_match = re.search(r"(?:after|since)\s+(20\d{2})", lower)
-        count_only = bool(_COUNT_RE.search(q))
+        # "which of them know X?" is a cardinality question over the prior set
+        count_only = bool(_COUNT_RE.search(q) or _WHICH_OF_THEM_SKILL_RE.search(q))
         hire_date_gt = f"{year_match.group(1)}-01-01" if year_match and count_only else None
         intersect = prior_ids if anaphora else None
         # When user says "of them" but we only have dept/city memory (no IDs yet).
@@ -789,6 +910,12 @@ def try_heuristic_plan(
         return _employee_by_name_plan(about.group(1), department=dept_hint)
 
     # Generic structured employee analytics
+    # Never send meta-count / pure pronoun questions to nl2sql (handled above).
+    if _META_COUNT_RE.search(q) or (
+        wants_person and _PRONOUN_ONLY_RE.search(q) and not entity_name
+    ):
+        return _meta_count_plan(memory) if _META_COUNT_RE.search(q) else _pronoun_clarify_plan()
+
     if any(
         w in lower
         for w in (

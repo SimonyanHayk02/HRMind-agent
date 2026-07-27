@@ -60,6 +60,25 @@ class NodeRunner:
         if "question" not in params:
             params.setdefault("question", state.question)
 
+        # Inject session context so tools can recover cohort / entity refs
+        if node.name == "employee" and state.session_entities:
+            params.setdefault(
+                "entity_memory",
+                [e.model_dump(mode="json") for e in state.session_entities],
+            )
+            if state.person_bindings:
+                params.setdefault("person_bindings", state.person_bindings)
+        if node.name in {"sql", "resume_search"} and state.last_employee_ids:
+            filters = dict(params.get("filters") or {})
+            # Recover omitted cohort IDs when plan forgot to bind them
+            if not filters.get("employee_ids") and not params.get("employee_ids"):
+                if params.get("use_session_cohort") or node.input_bindings.get(
+                    "employee_ids"
+                ):
+                    params["employee_ids"] = list(state.last_employee_ids)
+                    filters["employee_ids"] = list(state.last_employee_ids)
+                    params["filters"] = filters
+
         if node.kind == "operator":
             op = self._operators.get(node.name)
             # Prefer bound "data" else first dependency result

@@ -251,6 +251,8 @@ def _skill_plan(state: QueryState, *, prior_ids: list[str] | None) -> ExecutionP
     )
     return ExecutionPlan(
         nodes=nodes,
-        response_strategy="template" if state.want_count else "llm_format",
+        response_strategy="template"
+        if (state.want_count or prior_ids is not None)
+        else "llm_format",
         active_cohort_node=id_source,
     )

@@ -14,6 +14,10 @@ from app.domain.session import SessionMemory
 from app.tools.employee.tool import extract_manager_subject
 
 _COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+_WHICH_OF_THEM_SKILL_RE = re.compile(
+    r"\bwhich of them\s+(?:know|knows|have|has)\b",
+    re.I,
+)
 _FACET_RE = re.compile(
     r"\b(different|unique|distinct)\s+(countries|country|cities|city|departments|department|"
     r"education|statuses|status|positions|position)\b|"
@@ -72,7 +76,7 @@ def extract_query_state(
 
     state.refers_to_prior = refers_to_prior_set(q)
     state.filters = _extract_filters(q, catalog)
-    state.want_count = bool(_COUNT_RE.search(q))
+    state.want_count = bool(_COUNT_RE.search(q) or _WHICH_OF_THEM_SKILL_RE.search(q))
 
     year = _YEAR_RE.search(q)
     if year:

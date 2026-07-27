@@ -6,6 +6,7 @@ from app.application.execution.graph_state import GraphState
 from app.application.execution.node_runner import NodeRunner
 from app.application.planning.plan_schema import ExecutionPlan
 from app.domain.auth import AuthContext
+from app.domain.session import EntityRef
 
 
 class LangGraphExecutor:
@@ -14,8 +15,23 @@ class LangGraphExecutor:
     def __init__(self, node_runner: NodeRunner) -> None:
         self._runner = node_runner
 
-    async def execute(self, plan: ExecutionPlan, *, question: str, auth: AuthContext) -> GraphState:
-        state = GraphState(question=question, auth=auth)
+    async def execute(
+        self,
+        plan: ExecutionPlan,
+        *,
+        question: str,
+        auth: AuthContext,
+        session_entities: list[EntityRef] | None = None,
+        last_employee_ids: list[str] | None = None,
+        person_bindings: dict[str, str] | None = None,
+    ) -> GraphState:
+        state = GraphState(
+            question=question,
+            auth=auth,
+            session_entities=list(session_entities or []),
+            last_employee_ids=list(last_employee_ids or []),
+            person_bindings=dict(person_bindings or {}),
+        )
         pending = {n.id: n for n in plan.nodes}
         completed: set[str] = set()
 

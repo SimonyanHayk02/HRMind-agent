@@ -27,11 +27,17 @@ def should_set_universe_all(state: QueryState) -> bool:
 
 
 def apply_universe_marker(session: SessionMemory, state: QueryState) -> list[ConstraintRef]:
-    """Return constraints to merge, including a soft universe marker when needed."""
+    """Return constraints to merge, including a soft universe marker when needed.
+
+    When refining (anaphora or new filters), drop a stale `_universe=all` marker
+    from the session so it does not pollute later planner packets.
+    """
     constraints = constraints_from_query_state(state)
     if should_set_universe_all(state):
         constraints.append(ConstraintRef(field="_universe", op="eq", value="all"))
-    elif state.refers_to_prior or state.filters:
+    elif state.refers_to_prior or state.filters or state.skill:
         # Drop stale universe-only marker when refining
-        pass
+        session.constraint_memory = [
+            c for c in session.constraint_memory if c.field != "_universe"
+        ]
     return constraints

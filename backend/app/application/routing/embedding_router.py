@@ -67,4 +67,9 @@ class EmbeddingRouter:
         assert self._centroids is not None
         q = await self._embeddings.embed(question)
         scores = {label: _cos(q, vec) for label, vec in self._centroids.items()}
-        return max(scores, key=scores.get)
+        best = max(scores, key=scores.get)
+        # Below threshold → treat as chitchat (avoid tooling on ambiguous small-talk)
+        if scores[best] < self._threshold and best == RouterLabel.NEEDS_TOOLS:
+            if scores[RouterLabel.CHITCHAT] >= scores[RouterLabel.NEEDS_TOOLS]:
+                return RouterLabel.CHITCHAT
+        return best

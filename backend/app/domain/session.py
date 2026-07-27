@@ -32,9 +32,27 @@ class LastFocus(BaseModel):
     """What the last useful answer was about — drives short follow-ups like 'names please'."""
 
     kind: Literal["facet", "cohort"] = "cohort"
-    # Facet dimension (country/city/department) or "employees" for a people cohort.
     dimension: str | None = None
     values: list[str] = Field(default_factory=list)
+
+
+class ActiveReferent(BaseModel):
+    """Explicit active 'them' cohort with provenance for follow-ups."""
+
+    type: Literal["employee_cohort"] = "employee_cohort"
+    ids: list[str] = Field(default_factory=list)
+    label: str | None = None
+    source_turn: int | None = None
+    confidence: float = 1.0
+
+
+class ToolFact(BaseModel):
+    """Compact cached tool fact — never stores raw CV text."""
+
+    key: str
+    value: Any
+    created_at: datetime
+    ttl_seconds: int = 180
 
 
 class SessionMemory(BaseModel):
@@ -46,7 +64,10 @@ class SessionMemory(BaseModel):
     summary: str = ""
     entity_memory: list[EntityRef] = Field(default_factory=list)
     constraint_memory: list[ConstraintRef] = Field(default_factory=list)
-    # Last employee ID set from resume/SQL tools — used for follow-ups like "say their names".
     last_employee_ids: list[str] = Field(default_factory=list)
     last_focus: LastFocus | None = None
+    active_referent: ActiveReferent | None = None
+    named_sets: dict[str, list[str]] = Field(default_factory=dict)
+    person_bindings: dict[str, str] = Field(default_factory=dict)
+    tool_fact_cache: dict[str, ToolFact] = Field(default_factory=dict)
     updated_at: datetime | None = None

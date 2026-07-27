@@ -95,7 +95,11 @@ class EmployeeTool:
                     params.get("question") or ""
                 )
                 return await self._resolve_by_name(
-                    employees, auth, name=name, department=dept_hint
+                    employees,
+                    auth,
+                    name=name,
+                    department=dept_hint,
+                    entity_memory=params.get("entity_memory"),
                 )
             if action == "by_email":
                 emp = await employees.get_by_email(params["email"])
@@ -156,7 +160,11 @@ class EmployeeTool:
                 or _dept_from_text(name)
             )
             resolved = await self._resolve_by_name(
-                employees, auth, name=name, department=dept
+                employees,
+                auth,
+                name=name,
+                department=dept,
+                entity_memory=params.get("entity_memory"),
             )
             if resolved.data and isinstance(resolved.data, dict) and resolved.data.get("clarify"):
                 return resolved
@@ -191,6 +199,7 @@ class EmployeeTool:
         *,
         name: str,
         department: str | None = None,
+        entity_memory: list | None = None,
     ) -> ToolResult:
         clean = re.sub(
             r"\b(?:in|from)\s+(?:Engineering|People|Sales|Finance|Product|Operations)\b",
@@ -198,6 +207,37 @@ class EmployeeTool:
             name or "",
             flags=re.I,
         ).strip(" .,?!")
+
+        # Prefer session entity memory via EntityResolver before DB search
+        if entity_memory:
+            from app.domain.services.entity_resolver import EntityResolver
+            from app.domain.session import EntityRef
+
+            refs: list[EntityRef] = []
+            for raw in entity_memory:
+                try:
+                    if isinstance(raw, EntityRef):
+                        refs.append(raw)
+                    elif isinstance(raw, dict):
+                        refs.append(EntityRef.model_validate(raw))
+                except Exception:
+                    continue
+            eid, conf = EntityResolver().resolve_from_refs(clean, refs)
+            if eid is not None:
+                emp = await employees.get_by_id(eid)
+                if emp and can_access_employee(
+                    auth, target_id=str(emp.id), target_department=emp.department
+                ):
+                    return ToolResult(
+                        data=self._serialize(auth, emp),
+                        confidence=conf,
+                        sources=[
+                            SourceRef(
+                                kind="employee", ref=str(emp.id), label=emp.full_name
+                            )
+                        ],
+                    )
+
         matches = await employees.search_by_name(clean, limit=15)
         # Prefer exact full-name matches when available
         exact = [

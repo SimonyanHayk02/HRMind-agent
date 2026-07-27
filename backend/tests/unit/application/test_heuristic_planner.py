@@ -24,10 +24,26 @@ def test_who_knows_python_uses_resume_search() -> None:
 def test_how_many_know_python_counts_via_resume_ids() -> None:
     plan = try_heuristic_plan("and from that 100 employees how much knows python")
     assert plan is not None
-    # Without prior last_employee_ids this is a fresh skill count (not anaphora).
+    # Without prior last_employee_ids this is a fresh skill count (anaphora detected,
+    # but no cohort to reuse yet).
+    assert refers_to_prior_set("and from that 100 employees how much knows python")
     assert [n.name for n in plan.nodes] == ["resume_search", "extract_employee_ids", "sql"]
     assert plan.nodes[-1].params["count_only"] is True
     assert plan.response_strategy == "template"
+
+
+def test_from_that_n_employees_reuses_prior_ids() -> None:
+    prior = "00000000-0000-0000-0000-000000000001"
+    memory = _memory_with_ids(prior)
+    plan = try_heuristic_plan(
+        "and from that 100 employees how much knows python", memory=memory
+    )
+    assert plan is not None
+    # With a prior cohort, follow-up scopes resume + intersect to those IDs.
+    assert any(n.name == "intersect_ids" for n in plan.nodes)
+    resume = next(n for n in plan.nodes if n.name == "resume_search")
+    assert prior in resume.params.get("employee_ids", [])
+    assert plan.nodes[-1].params.get("count_only") is True
 
 
 def test_aws_experience_uses_resume_search() -> None:
@@ -251,4 +267,61 @@ def test_extract_manager_subject() -> None:
     assert extract_manager_subject("Who is the manager of Alice Nguyen?") == "Alice Nguyen"
     assert extract_manager_subject("Who manages Grace Mueller?") == "Grace Mueller"
     assert extract_manager_subject("Alice Nguyen's manager") == "Alice Nguyen"
+
+
+def test_meta_count_uses_tool_fact_cache() -> None:
+    from datetime import UTC, datetime
+
+    from app.domain.session import ToolFact
+
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        tool_fact_cache={
+            "last_count": ToolFact(
+                key="last_count",
+                value=7,
+                created_at=datetime.now(UTC),
+            )
+        },
+    )
+    plan = try_heuristic_plan("how many was that again?", memory=memory)
+    assert plan is not None
+    assert plan.nodes == []
+    assert plan.clarify_question == "The answer is 7."
+
+
+def test_pronoun_location_uses_person_binding() -> None:
+    eid = UUID("00000000-0000-0000-0000-000000000099")
+    memory = SessionMemory(
+        session_id="s1",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        person_bindings={"she": str(eid), "her": str(eid)},
+    )
+    plan = try_heuristic_plan("where does she live?", memory=memory)
+    assert plan is not None
+    assert plan.nodes[0].name == "employee"
+    assert plan.nodes[0].params.get("action") == "by_id"
+    assert str(plan.nodes[0].params.get("employee_id")) == str(eid)
+
+
+def test_pronoun_location_without_binding_clarifies() -> None:
+    plan = try_heuristic_plan("where does she live?")
+    assert plan is not None
+    assert plan.nodes == []
+    assert plan.clarify_question is not None
+    assert "which employee" in plan.clarify_question.lower()
+
+
+def test_which_of_them_know_is_count() -> None:
+    memory = _memory_with_ids("00000000-0000-0000-0000-000000000001")
+    plan = try_heuristic_plan("which of them know Kubernetes?", memory=memory)
+    assert plan is not None
+    assert any(n.name == "resume_search" for n in plan.nodes)
+    assert plan.nodes[-1].params.get("count_only") is True
+    assert plan.response_strategy == "template"
 

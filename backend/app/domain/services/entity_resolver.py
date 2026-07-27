@@ -17,22 +17,51 @@ class ResolveResult:
 
 
 class EntityResolver:
-    def __init__(self, employees: EmployeeRepository) -> None:
+    def __init__(self, employees: EmployeeRepository | None = None) -> None:
         self._employees = employees
 
-    async def resolve(self, name: str, memory: SessionMemory | None = None) -> ResolveResult:
-        # Prefer entity memory aliases
+    def resolve_from_refs(
+        self, name: str, entities: Sequence[EntityRef]
+    ) -> tuple[UUID | None, float]:
+        """Resolve a name against session entity memory without a DB round-trip."""
+        needle = (name or "").strip().lower()
+        if not needle or not entities:
+            return None, 0.0
+        for ent in entities:
+            aliases = [ent.display_name.lower(), *[a.lower() for a in ent.aliases]]
+            if needle in aliases or any(
+                a == needle or needle in a.split() or a in needle.split() for a in aliases
+            ):
+                return ent.employee_id, ent.confidence
+            # First-name / last-name token match
+            for a in aliases:
+                tokens = a.split()
+                if needle in tokens or any(t.startswith(needle) for t in tokens if len(needle) > 2):
+                    return ent.employee_id, max(0.7, ent.confidence * 0.9)
+        return None, 0.0
+
+    async def resolve(
+        self, name: str, memory: SessionMemory | None = None
+    ) -> ResolveResult:
         if memory:
-            for ent in memory.entity_memory:
-                aliases = [ent.display_name.lower(), *[a.lower() for a in ent.aliases]]
-                if name.lower() in aliases or name.lower() == ent.display_name.lower():
-                    emp = await self._employees.get_by_id(ent.employee_id)
-                    if emp:
-                        return ResolveResult(candidates=[emp], confidence=ent.confidence, selected=emp)
+            eid, conf = self.resolve_from_refs(name, memory.entity_memory)
+            if eid is not None and self._employees is not None:
+                emp = await self._employees.get_by_id(eid)
+                if emp:
+                    return ResolveResult(
+                        candidates=[emp], confidence=conf, selected=emp
+                    )
+            if eid is not None and self._employees is None:
+                return ResolveResult(candidates=[], confidence=conf, selected=None)
+
+        if self._employees is None:
+            return ResolveResult(candidates=[], confidence=0.0)
 
         matches = await self._employees.search_by_name(name, limit=5)
         if not matches:
             return ResolveResult(candidates=[], confidence=0.0)
         if len(matches) == 1:
-            return ResolveResult(candidates=matches, confidence=0.95, selected=matches[0])
+            return ResolveResult(
+                candidates=matches, confidence=0.95, selected=matches[0]
+            )
         return ResolveResult(candidates=matches, confidence=0.4, selected=None)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,13 @@ class ResponseFormatter:
         self._prompts_dir = prompts_dir or Path(__file__).resolve().parents[2] / "prompts"
 
     async def format(
-        self, question: str, plan: ExecutionPlan, state: GraphState
+        self,
+        question: str,
+        plan: ExecutionPlan,
+        state: GraphState,
+        *,
+        context_manager=None,
+        auth=None,
     ) -> tuple[str, float, list[SourceRef], str | None]:
         if plan.clarify_question:
             # Empty-node plans are informational (e.g. unsupported topic), not UI clarifies.
@@ -80,6 +87,11 @@ class ResponseFormatter:
         count_asked = is_count_question(question) or _plan_is_count_only(plan)
         facet_dim = _plan_facet_dimension(plan)
 
+        # Honest empty-result answers — never dump raw JSON or LLM "I don't have that"
+        empty_msg = _format_empty_tool_results(question, plan, payloads, count_asked)
+        if empty_msg is not None:
+            return empty_msg, confidence, sources, None
+
         if plan.response_strategy == "template":
             # Prefer explicit count payloads when the question/plan is a count
             # (cohort-materialization nodes may also return id rows).
@@ -129,6 +141,15 @@ class ResponseFormatter:
                         None,
                     )
                 if isinstance(p, dict) and isinstance(p.get("rows"), list):
+                    if not p["rows"] and count_asked:
+                        return "The answer is 0.", confidence, sources, None
+                    if not p["rows"]:
+                        return (
+                            "None of the previous set match that criteria.",
+                            confidence,
+                            sources,
+                            None,
+                        )
                     facet = _format_facet_rows(p["rows"], facet_dim)
                     if facet:
                         return facet, confidence, sources, None
@@ -152,10 +173,30 @@ class ResponseFormatter:
             last = payloads[-1]
             if isinstance(last, list) and last and all(isinstance(x, str) for x in last):
                 return f"Found {len(last)} matching employees.", confidence, sources, None
+            if isinstance(last, list) and not last:
+                return (
+                    "None of the previous set match that criteria.",
+                    confidence,
+                    sources,
+                    None,
+                )
             # Do not turn an unscoped employee dump into a fake numeric answer
             if _looks_unscoped_dump(last) and not count_asked:
                 return UNSUPPORTED_ANSWER, 0.3, sources, None
-            return json.dumps(last, default=str), confidence, sources, None
+            # Never leak raw tool JSON to the user
+            if isinstance(last, dict):
+                pretty = _format_employee_tool_payload(last, question)
+                if pretty:
+                    return pretty, confidence, sources, None
+                if last.get("employees") == []:
+                    return (
+                        "I couldn't find that employee. "
+                        "Which person did you mean?",
+                        0.4,
+                        sources,
+                        "Which employee do you mean?",
+                    )
+            return UNSUPPORTED_ANSWER, 0.3, sources, None
 
         path = self._prompts_dir / "response.md"
         system = (
@@ -172,7 +213,15 @@ class ResponseFormatter:
                 pretty = _format_employee_tool_payload(p, question)
                 if pretty:
                     return pretty, confidence, sources, None
-        user = json.dumps({"question": question, "results": payloads}, default=str)
+        packed = payloads
+        effective_auth = auth or state.auth
+        if context_manager is not None:
+            packed = context_manager.build_for_responder(payloads, auth=effective_auth)
+        else:
+            from app.application.memory.context_budget import compact_tool_payloads
+
+            packed = compact_tool_payloads(payloads, auth=effective_auth)
+        user = json.dumps({"question": question, "results": packed}, default=str)
         answer = await self._llm.complete(system=system, user=user, temperature=0.0)
         if not answer or answer.strip().lower() in {"null", "none"}:
             if not payloads or _looks_unscoped_dump(payloads[-1]):
@@ -182,6 +231,59 @@ class ResponseFormatter:
         if _is_spurious_headcount_answer(answer, question, payloads):
             return UNSUPPORTED_ANSWER, 0.3, sources, None
         return answer, confidence, sources, None
+
+
+def _format_empty_tool_results(
+    question: str,
+    plan: ExecutionPlan,
+    payloads: list[Any],
+    count_asked: bool,
+) -> str | None:
+    """Grounded empty answers for zero counts / empty cohorts / missing people."""
+    q = (question or "").lower()
+    prior_filter = bool(
+        re.search(r"\b(them|those|that set|of them|which of them)\b", q)
+        or any(
+            (n.params or {}).get("employee_ids")
+            or (n.params or {}).get("other")
+            for n in plan.nodes
+            if n.name in {"resume_search", "intersect_ids", "sql"}
+        )
+    )
+
+    for p in reversed(payloads):
+        if isinstance(p, dict) and p.get("count") is not None:
+            try:
+                n = int(p["count"])
+            except (TypeError, ValueError):
+                continue
+            if n == 0:
+                if prior_filter and not count_asked:
+                    return "None of the previous set match that criteria."
+                return "The answer is 0."
+        if (
+            isinstance(p, dict)
+            and "row_count" in p
+            and "rows" not in p
+            and int(p.get("row_count") or 0) == 0
+        ):
+            return "The answer is 0."
+        if isinstance(p, dict) and isinstance(p.get("rows"), list) and not p["rows"]:
+            if count_asked:
+                return "The answer is 0."
+            if prior_filter:
+                return "None of the previous set match that criteria."
+            return "I couldn't find matching employees for that."
+        if isinstance(p, dict) and p.get("employees") == []:
+            return (
+                "I couldn't find that employee. Which person did you mean?"
+            )
+        if isinstance(p, list) and not p:
+            if count_asked:
+                return "The answer is 0."
+            if prior_filter:
+                return "None of the previous set match that criteria."
+    return None
 
 
 def _plan_is_count_only(plan: ExecutionPlan) -> bool:

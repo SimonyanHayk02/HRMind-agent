@@ -85,6 +85,17 @@ def wire_application_stack(container) -> None:
         Summarizer(container.llm, prompts_dir),
         max_history=settings.max_history,
         summary_trigger=settings.summary_trigger,
+        max_entity_memory=settings.max_entity_memory,
+    )
+    from app.application.memory.context_manager import ContextManager
+
+    context_manager = ContextManager(
+        memory,
+        max_ids_in_packet=settings.max_ids_in_packet,
+        max_entity_memory=settings.max_entity_memory,
+        tool_fact_ttl_seconds=settings.tool_fact_ttl_seconds,
+        max_context=settings.max_context,
+        max_summary_chars=settings.max_summary_chars,
     )
 
     from app.application.schema.catalog_service import CatalogService
@@ -109,7 +120,7 @@ def wire_application_stack(container) -> None:
     formatter = ResponseFormatter(container.llm, prompts_dir)
 
     chat_service = ChatService(
-        memory=memory,
+        context=context_manager,
         rule_router=RuleRouter(),
         embedding_router=EmbeddingRouter(container.embeddings, threshold=settings.router_threshold),
         planner=planner,
@@ -119,5 +130,6 @@ def wire_application_stack(container) -> None:
         catalog_service=catalog_service,
     )
     container.extras["chat_service"] = chat_service
+    container.extras["context_manager"] = context_manager
     container.extras["tool_registry"] = tools
     container.extras["operator_registry"] = operators

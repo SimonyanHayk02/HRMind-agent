@@ -8,6 +8,4 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-data/seed/resumes/*.pdf
-data/seed/resumes/*.docx
 .DS_Store

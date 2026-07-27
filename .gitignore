@@ -21,6 +21,4 @@ build/
 !.env.example
 !**/.env.example
 
-# Local generated resume binaries (JSON seed can be committed)
-backend/data/seed/resumes/*.pdf
-backend/data/seed/resumes/*.docx
+

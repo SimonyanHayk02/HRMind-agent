@@ -180,24 +180,39 @@ def build_person_answer(
     return prefix + f"{fact.name} speaks {langs}, according to their resume."
 
 
+def _coverage_caveat(coverage: tuple[int, int] | str | None) -> str:
+    if isinstance(coverage, tuple) and len(coverage) == 2:
+        covered, total = coverage
+        if total > 0 and covered < total:
+            missing = total - covered
+            return (
+                f" Read from {covered} of {total} resumes; {missing} "
+                f"{'has' if missing == 1 else 'have'} no languages recorded."
+            )
+        return ""
+    if isinstance(coverage, str) and coverage.strip():
+        return f" {coverage.strip()}"
+    return ""
+
+
 def build_cohort_answer(
     facts: list[LanguageFact],
     *,
     language: str | None = None,
-    coverage: str | None = None,
+    coverage: tuple[int, int] | str | None = None,
     among_prior: bool = False,
     **_ignored: Any,
 ) -> str:
     label = canon_language(language) or (language or "that language")
     scope = "among the previous list, " if among_prior else ""
     if not facts:
-        base = f"I found no one {scope}who lists {label} on their resume."
-        if coverage:
-            return f"{base} {coverage}"
-        return base
+        return (
+            f"I found no one {scope}who lists {label} on their resume."
+            + _coverage_caveat(coverage)
+        )
     names = ", ".join(f.name for f in facts[:25])
     more = f" (+{len(facts) - 25} more)" if len(facts) > 25 else ""
-    base = f"{len(facts)} employee(s) {scope}list {label} on their resume: {names}{more}."
-    if coverage:
-        return f"{base} {coverage}"
-    return base
+    return (
+        f"{len(facts)} employee(s) {scope}list {label} on their resume: {names}{more}."
+        + _coverage_caveat(coverage)
+    )

@@ -44,8 +44,9 @@ _ORDINAL_ALT = "|".join(
 # never bind. Numeric forms (#2, 2nd) may omit the noun.
 _PERSON_NOUN = r"(?:person|persons|people|employee|employees|one|ones)"
 _ORDINAL_RE = re.compile(
-    rf"\b(?:the\s+)?(?:"
+    rf"(?:^|(?<!\w))(?:the\s+)?(?:"
     rf"(?P<ord>{_ORDINAL_ALT})\s+{_PERSON_NOUN}"
+    # Hash ordinals: "#1" has no word-char before the digit, so avoid \b before #.
     rf"|#(?P<num>\d+)(?:\s+{_PERSON_NOUN})?"
     rf"|(?P<ord_num>\d+)(?:st|nd|rd|th)(?:\s+{_PERSON_NOUN})?"
     rf")\b",

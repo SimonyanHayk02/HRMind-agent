@@ -32,6 +32,22 @@ _SQL_CONSTRAINT_FIELDS = frozenset(
     {"department", "position", "education", "employment_status"}
 )
 _FACET_DIMS = ("country", "city", "department", "position", "education", "employment_status")
+_PERSON_ATTR_RESUME_PURPOSES = frozenset(
+    {
+        "birthday_person",
+        "location_person",
+        "languages_person",
+        "certifications_person",
+    }
+)
+
+
+def _is_person_attribute_resume_plan(plan: ExecutionPlan) -> bool:
+    return any(
+        n.name == "resume_search"
+        and str((n.params or {}).get("purpose") or "") in _PERSON_ATTR_RESUME_PURPOSES
+        for n in plan.nodes
+    )
 
 
 def infer_constraints_from_question(question: str) -> list[ConstraintRef]:
@@ -170,6 +186,12 @@ def extract_listed_employees(state: GraphState, plan: ExecutionPlan) -> list[Ent
     Used for ordinals ("the first person"). Facet value lists and count-only
     payloads are ignored so they cannot poison display order.
     """
+    # Count-only SQL turns must not invent a display order from resume hits.
+    count_only_present = any(
+        n.name == "sql" and bool((n.params or {}).get("count_only"))
+        for n in plan.nodes
+    )
+
     # Prefer the active cohort / last sql or employee node that returned name rows.
     prefer_ids: list[str] = []
     if plan.active_cohort_node:
@@ -200,7 +222,13 @@ def extract_listed_employees(state: GraphState, plan: ExecutionPlan) -> list[Ent
                 out.append(ent)
         if out:
             return out
-        # Attribute / skill RAG answers that never passed through SQL.
+        # Never scrape unordered resume hits after a count-only answer.
+        if count_only_present:
+            return []
+        # Person-attribute resume purposes are not display name lists.
+        if _is_person_attribute_resume_plan(plan):
+            return []
+        # Skill / discovery RAG answers that never passed through SQL.
         return _entities_from_resume_payload(data)
 
     for nid in prefer_ids:

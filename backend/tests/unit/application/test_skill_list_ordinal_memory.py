@@ -70,3 +70,41 @@ def test_ordinal_first_one_binds_last_listed() -> None:
     assert ref.kind == "resolved"
     assert ref.employee_id == str(e1)
     assert ref.display_name == "Jack Smith"
+
+
+def test_birthday_person_resume_does_not_replace_last_listed() -> None:
+    """Ordinal DOB answers must not shrink last_listed to the subject alone."""
+    e1 = "00000000-0000-0000-0000-000000000001"
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="r1",
+                kind="tool",
+                name="resume_search",
+                params={
+                    "purpose": "birthday_person",
+                    "employee_ids": [e1],
+                    "name": "Jack Smith",
+                },
+            )
+        ],
+        response_strategy="template",
+    )
+    state = GraphState(
+        question="first person's birthday?",
+        auth=AuthContext(
+            user_id="u", tenant_id="t", role=Role.RECRUITER, department_id="Engineering"
+        ),
+        node_results={
+            "r1": ToolResult(
+                data={
+                    "hits": [
+                        {"employee_id": e1, "employee_name": "Jack Smith"},
+                    ],
+                    "employee_ids": [e1],
+                },
+                confidence=0.9,
+            )
+        },
+    )
+    assert extract_listed_employees(state, plan) == []

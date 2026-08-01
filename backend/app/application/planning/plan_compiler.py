@@ -239,6 +239,73 @@ class PlanCompiler:
 
             return out_of_scope_plan(unsupported_answer_for(q)), "unsupported"
 
+        # Ordinals / list deixis before birthday name extract ("top one's bday").
+        list_ref = resolve_list_referent(q, memory)
+        if list_ref.kind == "clarify":
+            return (
+                ExecutionPlan(
+                    nodes=[],
+                    response_strategy="template",
+                    clarify_question=list_ref.clarify_question,
+                    refusal_code=RefusalCode.AMBIGUOUS.value,
+                ),
+                "heuristic_list_referent",
+            )
+        if list_ref.kind == "resolved" and list_ref.employee_id:
+            return (
+                bound_person_attribute_plan(
+                    q,
+                    employee_id=list_ref.employee_id,
+                    display_name=list_ref.display_name or "that employee",
+                ),
+                "heuristic_list_referent",
+            )
+
+        # Birthday cohort / named person before elliptical profile dumps and
+        # before pronoun binding steals "Alice — when was she born?".
+        birthday_pre = extract_birthday(q)
+        if birthday_pre.matched and (
+            birthday_pre.scope != "person" or birthday_pre.person_name
+        ):
+            from app.application.planning.heuristic_planner import refers_to_prior_set
+            from app.application.understanding.plan_from_query_state import (
+                _birthday_plan,
+            )
+            from app.domain.query_state import QueryState as _QS
+
+            prior_ids = (
+                list(memory.last_employee_ids)
+                if memory and memory.last_employee_ids
+                else []
+            )
+            if len(prior_ids) > 50:
+                prior_ids = []
+            scoped_ids = (
+                prior_ids
+                if (
+                    birthday_pre.scope in {"closest", "upcoming", "today", "month"}
+                    and refers_to_prior_set(q)
+                    and prior_ids
+                )
+                else []
+            )
+            return (
+                _birthday_plan(
+                    _QS(
+                        intent="birthday",
+                        birthday_scope=birthday_pre.scope,
+                        birthday_month=birthday_pre.month,
+                        person_name=birthday_pre.person_name,
+                        person_employee_ids=list(scoped_ids),
+                        refers_to_prior=bool(scoped_ids),
+                        wants_age=birthday_pre.wants_age,
+                        wants_wish=birthday_pre.wants_wish,
+                        confidence=0.95,
+                    )
+                ),
+                "heuristic_birthday",
+            )
+
         pronoun_id = _resolve_pronoun_employee_id(q, memory)
         if _PRONOUN_ONLY_RE.search(q) and wants_person_lookup(q):
             # Bare pronoun person questions — never treat "she"/"he" as a name.
@@ -305,28 +372,6 @@ class PlanCompiler:
                         "heuristic_pronoun",
                     )
                 return _pronoun_clarify_plan(), "heuristic_pronoun"
-
-        # Ordinals / list deixis — before QueryState so "first person" is never a name.
-        list_ref = resolve_list_referent(q, memory)
-        if list_ref.kind == "clarify":
-            return (
-                ExecutionPlan(
-                    nodes=[],
-                    response_strategy="template",
-                    clarify_question=list_ref.clarify_question,
-                    refusal_code=RefusalCode.AMBIGUOUS.value,
-                ),
-                "heuristic_list_referent",
-            )
-        if list_ref.kind == "resolved" and list_ref.employee_id:
-            return (
-                bound_person_attribute_plan(
-                    q,
-                    employee_id=list_ref.employee_id,
-                    display_name=list_ref.display_name or "that employee",
-                ),
-                "heuristic_list_referent",
-            )
 
         # Bare elliptical SQL attrs ("what is the education?") about the bound person.
         from app.application.planning.heuristic_planner import (

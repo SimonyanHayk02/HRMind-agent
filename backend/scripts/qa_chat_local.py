@@ -873,6 +873,15 @@ def make_listed_ordinal_birthday_checkers(
                 label = line[2:].split("(")[0].strip()
                 if label:
                     names.append(label)
+        if not names:
+            # Singular formatter: "The matching employee is Priya Moreau (…)."
+            m = re.search(
+                r"\b(?:matching employee is|employee is)\s+"
+                r"([A-Z][A-Za-z\-']+(?:\s+[A-Z][A-Za-z\-']+)?)",
+                a,
+            )
+            if m:
+                names = [m.group(1).strip()]
         box["names"] = names
         if not names:
             return False, f"no bullet name to capture: {a[:180]}"

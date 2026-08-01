@@ -21,7 +21,11 @@ from app.domain.schema_catalog import SchemaCatalog
 from app.domain.session import SessionMemory
 from app.tools.employee.tool import extract_manager_subject, extract_reports_subject
 
-_COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+_COUNT_RE = re.compile(
+    r"\b(how many|how much|count|number of|headcount|total\s+employees?|ppl)\b|"
+    r"^\s*headcount\s*\??\s*$",
+    re.I,
+)
 _WHICH_OF_THEM_SKILL_RE = re.compile(
     r"\bwhich of them\s+(?:know|knows|have|has)\b",
     re.I,
@@ -30,7 +34,8 @@ _FACET_RE = re.compile(
     r"\b(different|unique|distinct)\s+(countries|country|cities|city|departments|department|"
     r"education|statuses|status|positions|position)\b|"
     r"\b(?:which|what|list(?:\s+the)?)\s+(?:different\s+|unique\s+)?"
-    r"(countries|country|cities|city|departments|department)\b|"
+    r"(countries|country|cities|city|departments|department)"
+    r"(?:\s+are\s+we\s+in)?\b|"
     r"\bin how(?:\s+many)?(?:\s+different)?\s+(countries|country|cities|city)\b",
     re.I,
 )
@@ -46,7 +51,9 @@ _SKILL_INTENT_RE = re.compile(
 )
 _ABOUT_RE = re.compile(
     r"(?:tell me about|who is|what about|profile of)\s+"
-    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)",
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)|"
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)\s*(?:'s)?\s+"
+    r"(?:profile|details)\b",
     re.I,
 )
 _YEAR_RE = re.compile(r"(?:after|since)\s+(20\d{2})", re.I)
@@ -165,6 +172,17 @@ def extract_query_state(
     state.filters = _extract_filters(q, catalog)
     state.want_count = bool(_COUNT_RE.search(q) or _WHICH_OF_THEM_SKILL_RE.search(q))
 
+    # Bare department token ("engineering?") → count, not a full roster dump.
+    if re.fullmatch(
+        r"\s*(engineering|engineers|engeneering|sales|finance|product|operations|people)\s*\??\s*",
+        q,
+        flags=re.I,
+    ):
+        state.intent = "count"
+        state.want_count = True
+        state.confidence = 0.9
+        return _merge_prior_filters(state, memory)
+
     # Tenure analytics must beat department-list / "who is …" profile salvage.
     if _TENURE_RE.search(q):
         state.intent = "tenure_agg"
@@ -248,16 +266,26 @@ def extract_query_state(
 
     about = _ABOUT_RE.search(q)
     if about and "manager" not in lower:
-        state.intent = "profile"
-        state.person_name = about.group(1).strip()
-        state.confidence = 0.85
-        return state
+        name = next((g for g in about.groups() if g), None)
+        if name:
+            state.intent = "profile"
+            state.person_name = name.strip()
+            state.confidence = 0.85
+            return state
 
-    # "do we have Sofia?" — existence / directory lookup (not prior-cohort refine).
+    # "do we have Sofia?" / "find Sofia" — directory lookup (not prior-cohort refine).
     existence = extract_person_existence_name(q)
     if existence:
         state.intent = "profile"
         state.person_name = existence
+        state.confidence = 0.88
+        return state
+    from app.application.memory.context_view import extract_lookup_name_candidate
+
+    lookup = extract_lookup_name_candidate(q)
+    if lookup:
+        state.intent = "profile"
+        state.person_name = lookup
         state.confidence = 0.88
         return state
 

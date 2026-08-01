@@ -30,19 +30,25 @@ NEEDS_TOOLS_EXAMPLES = [
     "when is eva kim's birthday",
     "say happy birthday to bob mueller",
     "whose birthday is today",
+    "what's our headcount",
+    "which countries are we in",
+    "find sofia",
 ]
 
 _HR_HINTS = re.compile(
     r"\b("
-    r"employee|employees|department|engineering|sales|finance|product|operations|people|"
-    r"manager|salary|hired|hire|resume|skill|skills|developer|headcount|count|"
-    r"how many|how much|python|kubernetes|aws|berlin|dubai|roster|profile|"
+    r"employee|employees|department|departments|engineering|engineers|engeneering|"
+    r"sales|finance|product|operations|people|"
+    r"manager|salary|salaries|hired|hire|resume|skill|skills|developer|headcount|count|"
+    r"how many|how much|total|ppl|python|kubernetes|aws|berlin|dubai|roster|profile|"
     r"who|about|tell me|find|search|list|show|names?|them|those|their|there|"
-    r"of them|of those|among them|name them|say their|"
-    r"where|live|lives|living|located|location|city|country|based|address|"
+    r"of them|of those|among them|name them|say their|gimme|"
+    r"where|live|lives|living|located|location|city|cities|country|countries|based|address|"
     r"status|flag|enable|disable|"
-    r"birthday|birthdays|birth|born|dob|age|old"
-    r")\b",
+    r"birthday|birthdays|birth|born|dob|bday|age|old|"
+    r"first|second|third|fourth|fifth|last|former|latter"
+    r")\b|"
+    r"#\d+",
     re.I,
 )
 

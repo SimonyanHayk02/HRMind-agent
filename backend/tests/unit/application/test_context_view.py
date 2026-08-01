@@ -241,6 +241,7 @@ async def test_llm_retry_after_fresh_scope_lint() -> None:
         auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
         memory=_alice_memory(),
     )
-    assert mode == "llm_retry_stripped"
-    assert llm.calls == 3
+    # Deterministic lookup ("search for Name") — no LLM retry needed.
+    assert mode in {"query_state", "heuristic"}
+    assert llm.calls == 0
     assert plan.nodes[0].params.get("name") == "Zorba Quiggle"

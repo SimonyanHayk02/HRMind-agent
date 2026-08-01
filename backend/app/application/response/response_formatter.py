@@ -145,6 +145,10 @@ class ResponseFormatter:
                             sources,
                             None,
                         )
+                    # Count plans also materialize an id cohort — never list names
+                    # when the user asked for a number.
+                    if count_asked:
+                        continue
                     facet = _format_facet_rows(p["rows"], facet_dim)
                     if facet:
                         return facet, confidence, sources, None
@@ -629,6 +633,11 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
             if email:
                 return f"{name}'s email is {email}."
             return f"I don't have an email on file for {name}."
+        if any(w in q for w in ("salary", "pay", "compensation", "earn", "make")):
+            sal = data.get("salary")
+            if sal is not None and sal != "":
+                return f"{name}'s salary is {sal}."
+            return f"I don't have salary on file for {name}."
         if "department" in q or "team" in q:
             dept = data.get("department")
             if dept:

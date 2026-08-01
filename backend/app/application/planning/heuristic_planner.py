@@ -55,7 +55,52 @@ _SKILL_INTENT_RE = re.compile(
     r")\b",
     re.I,
 )
-_COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
+_COUNT_RE = re.compile(
+    r"\b("
+    r"how many|how much|count|number of|headcount|"
+    r"total\s+employees?|total\s+headcount|our\s+headcount"
+    r")\b|"
+    r"^\s*headcount\s*\??\s*$",
+    re.I,
+)
+_ORG_HEADCOUNT_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:what(?:'s|\s+is)\s+)?(?:our\s+|the\s+)?headcount\s*\??|"
+    r"total\s+employees?\s*\??|"
+    r"(?:what(?:'s|\s+is)\s+)?(?:the\s+)?(?:total\s+)?(?:number\s+of\s+)?employees?\s*\??|"
+    r"how many people work here\s*\??"
+    r")\s*$",
+    re.I,
+)
+_BARE_DEPT_RE = re.compile(
+    r"^\s*(engineering|engineers|engeneering|sales|finance|product|operations|people)\s*\??\s*$",
+    re.I,
+)
+_BARE_SKILL_RE = re.compile(
+    rf"^\s*({_SKILLS})\s*\??\s*$",
+    re.I,
+)
+_PERSON_NAME = r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)"
+_SALARY_NAME_RE = re.compile(
+    rf"\b(?:what(?:'s|\s+is)\s+)?{_PERSON_NAME}\s*'s\s+(?:salary|pay|compensation)\b|"
+    rf"\b(?:salary|pay|compensation)\s+(?:of|for)\s+(?:the\s+)?{_PERSON_NAME}\b|"
+    rf"\bhow\s+much\s+does\s+(?:the\s+)?{_PERSON_NAME}\s+(?:make|earn|get\s+paid)\b",
+    re.I,
+)
+_DEPT_ALIASES: dict[str, str] = {
+    "engineering": "Engineering",
+    "engineers": "Engineering",
+    "engineer": "Engineering",
+    "engeneering": "Engineering",
+    "eng": "Engineering",
+    "sales": "Sales",
+    "finance": "Finance",
+    "product": "Product",
+    "operations": "Operations",
+    "ops": "Operations",
+    "people": "People",
+    "hr": "People",
+}
 _META_COUNT_RE = re.compile(
     r"\b("
     r"how many was that(?: again)?|"
@@ -114,7 +159,8 @@ _FOLLOWUP_NAMES_RE = re.compile(
     r"who are (they|those|them)|"
     r"list (them|those|their names?)|"
     r"say (their|there|the) names?|"
-    r"name them|show (me )?them|what are (their|there) names?"
+    r"name them|show (me )?them|what are (their|there) names?|"
+    r"gimme\s+(?:the\s+)?names?|lemme\s+(?:see\s+)?(?:the\s+)?names?"
     r")\b",
     re.I,
 )
@@ -127,7 +173,8 @@ _SHORT_LIST_RE = re.compile(
     r"which\s+ones?(?:\s+please)?|"
     r"which\s+(?:countries|cities|departments)(?:\s+please)?|"
     r"what\s+are\s+they|"
-    r"give\s+(?:me\s+)?(?:the\s+)?names?"
+    r"give\s+(?:me\s+)?(?:the\s+)?names?|"
+    r"gimme\s+(?:the\s+)?names?|lemme\s+(?:see\s+)?(?:the\s+)?names?"
     r")[\s?.!]*$",
     re.I,
 )
@@ -151,6 +198,7 @@ _FACET_LIST_RE = re.compile(
     r"\b("
     r"(?:which|what|list(?:\s+the)?|name(?:\s+the)?)\s+"
     r"(?:different\s+|unique\s+)?(?:countries|country|cities|city|departments|department)"
+    r"(?:\s+are\s+we\s+in)?"
     r")\b",
     re.I,
 )
@@ -175,7 +223,9 @@ _PERSON_LOCATION_RE = re.compile(
 )
 _ABOUT_PERSON_RE = re.compile(
     r"(?:tell me about|who is|what about|profile of)\s+"
-    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)",
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)|"
+    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)\s*(?:'s)?\s+"
+    r"(?:profile|details)\b",
     re.I,
 )
 
@@ -197,6 +247,9 @@ def _dept_hint(question: str) -> str | None:
 
 
 def _department_mentioned(lower: str) -> str | None:
+    for alias, canon in _DEPT_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lower):
+            return canon
     return next((d for d in _DEPARTMENTS if d.lower() in lower), None)
 
 
@@ -476,6 +529,12 @@ def elliptical_bound_person_plan(
     # Named or pronoun subjects are handled on dedicated paths.
     if _PRONOUN_ONLY_RE.search(q):
         return None
+    if _ABOUT_PERSON_RE.search(q):
+        return None
+    from app.application.memory.context_view import extract_lookup_name_candidate
+
+    if extract_lookup_name_candidate(q):
+        return None
     if _match_entity_name(q, memory):
         return None
     if extract_manager_subject(q) or extract_reports_subject(q):
@@ -538,7 +597,10 @@ def elliptical_bound_person_plan(
     from app.application.understanding.birthday import extract_birthday
 
     birthday = extract_birthday(q)
-    if birthday.matched and birthday.scope == "person":
+    if birthday.matched:
+        # Cohort birthday asks must not dump the bound person's profile.
+        if birthday.scope != "person":
+            return None
         from app.application.understanding.plan_from_query_state import _birthday_plan
         from app.domain.query_state import QueryState as _QS
 
@@ -1219,6 +1281,39 @@ def try_heuristic_plan(
             refusal_code=RefusalCode.OUT_OF_SCOPE.value,
         )
 
+    # Casual org headcount ("headcount?", "total employees?", "what's our headcount?")
+    if _ORG_HEADCOUNT_RE.match(q) or re.fullmatch(
+        r"\s*(?:what(?:'s|\s+is)\s+)?(?:our\s+|the\s+)?headcount\s*\??\s*",
+        q,
+        flags=re.I,
+    ):
+        return _filtered_count_plan({})
+
+    # Bare department follow-up after org headcount ("engineering?")
+    bare_dept = _BARE_DEPT_RE.match(q)
+    if bare_dept:
+        dept = _department_mentioned(bare_dept.group(1).lower())
+        if dept:
+            return _department_count_plan(dept)
+
+    # Named salary (recruiter ACL already passed in the compiler).
+    sal = _SALARY_NAME_RE.search(q)
+    if sal:
+        name = next((g for g in sal.groups() if g), None)
+        if name:
+            return _employee_by_name_plan(name.strip())
+
+    # Bare skill token ("python?") — expand to a skill ask; count in prior cohort.
+    bare_skill = _BARE_SKILL_RE.match(q)
+    if bare_skill:
+        skill = bare_skill.group(1)
+        return _resume_search_plan(
+            f"who knows {skill}",
+            count_only=bool(prior_ids or scope_filters),
+            intersect_with=prior_ids or None,
+            scope_filters=scope_filters if (scope_filters and not prior_ids) else None,
+        )
+
     # Birthdays live only in resume text — always retrieval, never SQL
     from app.application.understanding.birthday import extract_birthday
 
@@ -1643,14 +1738,21 @@ def try_heuristic_plan(
     # line, filled from the resume of whoever the employee tool resolved.
     about = _ABOUT_PERSON_RE.search(q)
     if about:
-        return _employee_by_name_plan(
-            about.group(1), department=dept_hint, with_location=True
-        )
+        name = next((g for g in about.groups() if g), None)
+        if name:
+            return _employee_by_name_plan(
+                name, department=dept_hint, with_location=True
+            )
 
-    # "do we have Sofia?" — directory existence; do not require LLM / prior cohort.
+    # "do we have Sofia?" / "find Sofia" — directory lookup.
     existence = extract_person_existence_name(q)
     if existence:
         return _employee_by_name_plan(existence, department=dept_hint)
+    from app.application.memory.context_view import extract_lookup_name_candidate
+
+    lookup = extract_lookup_name_candidate(q)
+    if lookup:
+        return _employee_by_name_plan(lookup, department=dept_hint)
 
     # Generic structured employee analytics
     # Never send meta-count / pure pronoun questions to nl2sql (handled above).
@@ -1689,6 +1791,14 @@ def try_heuristic_plan(
             refusal_code=RefusalCode.AMBIGUOUS.value,
         )
 
+    # Last-chance headcount / dept count before giving up.
+    if _COUNT_RE.search(q) or "headcount" in lower:
+        dept = _department_mentioned(lower)
+        if dept:
+            return _department_count_plan(dept)
+        if not (city or country or _SKILL_RE.search(q)):
+            return _filtered_count_plan({})
+
     # Gate residual analytics: prefer constrained templates / clarify over nl2sql.
     if any(
         w in lower
@@ -1696,8 +1806,6 @@ def try_heuristic_plan(
             "employee",
             "department",
             "hired",
-            "salary",
-            "headcount",
             "how many",
             "count",
         )

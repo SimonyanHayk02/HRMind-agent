@@ -28,7 +28,9 @@ from app.application.response.response_formatter import ResponseFormatter
 from app.application.routing.embedding_router import EmbeddingRouter
 from app.application.routing.rule_router import RuleRouter
 from app.application.schema.catalog_service import CatalogService
+from app.application.understanding.birthday import extract_birthday
 from app.application.understanding.extract_query_state import extract_query_state
+from app.application.understanding.list_referents import has_list_referent_phrase
 from app.application.understanding.status_change import (
     PENDING_SET_STATUS_KEY,
     PENDING_STATUS_MUTATION_KEY,
@@ -123,7 +125,11 @@ class ChatService:
                 or session.active_referent
             )
             status_req = extract_status_change(body.question)
-            if label == RouterLabel.CHITCHAT and status_req.matched:
+            if label == RouterLabel.CHITCHAT and (
+                status_req.matched
+                or has_list_referent_phrase(body.question)
+                or extract_birthday(body.question).matched
+            ):
                 label = RouterLabel.NEEDS_TOOLS
             has_person_focus = bool(
                 session.person_bindings

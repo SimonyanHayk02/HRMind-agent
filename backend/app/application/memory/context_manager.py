@@ -301,8 +301,10 @@ class ContextManager:
                 session = await self._memory.set_active_referent(session, None)
             # Soft greeting plans intentionally do not clear the cohort.
 
+        # Bound person-attribute turns (ordinal DOB, location, profile) must not
+        # replace a multi-person display list with the single subject.
         listed = extract_listed_employees(state, plan)
-        if listed:
+        if listed and not _bound_person_id_from_plan(plan):
             session = await self._memory.set_last_listed(session, listed)
 
         entities = extract_entities_from_state(state)

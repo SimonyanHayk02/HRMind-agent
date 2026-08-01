@@ -99,6 +99,7 @@ _RESERVED_NAMES = frozenset(
         "ninth",
         "tenth",
         "last",
+        "top",
         "person",
         "persons",
         "former",
@@ -176,6 +177,7 @@ _COHORT_SUBJECT_RE = re.compile(
 _PERSON_DEIXIS_RE = re.compile(
     r"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last)"
     r"\s+(?:person|persons|one|ones)\b|"
+    r"#\d+|"
     r"\b(?:he|she|him|her|his|hers|they|them|their|theirs)\b",
     re.IGNORECASE,
 )
@@ -199,13 +201,26 @@ _PERSON_PATTERNS: list[re.Pattern[str]] = [
         re.IGNORECASE,
     ),
     re.compile(rf"\bhappy\s+birth\s*day\s+(?:to|for)\s+(?:the\s+)?{_NAME}\b", re.IGNORECASE),
-    # when is Eva Kim's birthday / what is the birthday of Eva Kim
+    # Carol Garcia dob? / bday for Alice Bauer / Alice Nguyen — when was she born?
     re.compile(
-        rf"\b{_NAME}\s*'s\s+(?:birth\s*day|date\s+of\s+birth|birth\s*date|age)\b",
+        rf"\b{_NAME}\s*(?:'s)?\s*(?:dob|bday)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:birth\s*day|date\s+of\s+birth|birth\s*date)\s+(?:of|for)\s+"
+        rf"\b(?:dob|bday)\s+(?:of|for)\s+(?:the\s+)?{_NAME}\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_NAME}\s*[—\-:\,]\s*when\s+was\s+(?:she|he|they)\s+born\b",
+        re.IGNORECASE,
+    ),
+    # when is Eva Kim's birthday / what is the birthday of Eva Kim
+    re.compile(
+        rf"\b{_NAME}\s*'s\s+(?:birth\s*day|date\s+of\s+birth|birth\s*date|age|dob|bday)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:birth\s*day|date\s+of\s+birth|birth\s*date|dob|bday)\s+(?:of|for)\s+"
         rf"(?:the\s+)?{_NAME}\b",
         re.IGNORECASE,
     ),

@@ -118,6 +118,65 @@ def _check_orch(case: dict) -> bool:
     if check == "skill_rag":
         plan = try_heuristic_plan(q)
         return bool(plan and any(n.name == "resume_search" for n in plan.nodes))
+    if check == "languages_cohort":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any(
+                (n.params or {}).get("purpose") == "languages_cohort" for n in plan.nodes
+            )
+        )
+    if check == "certifications_cohort":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any(
+                (n.params or {}).get("purpose") == "certifications_cohort"
+                for n in plan.nodes
+            )
+        )
+    if check == "hire_window":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any(
+                n.name == "sql"
+                and "hire_date_gte" in ((n.params or {}).get("filters") or {})
+                for n in plan.nodes
+            )
+        )
+    if check == "tenure_template":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any(
+                (n.params or {}).get("template") in {"agg_tenure", "agg_tenure_by_dept"}
+                for n in plan.nodes
+            )
+        )
+    if check == "reports_action":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any((n.params or {}).get("action") == "reports" for n in plan.nodes)
+        )
+    if check == "reports_skill_place":
+        plan = try_heuristic_plan(q)
+        return bool(
+            plan
+            and any((n.params or {}).get("action") == "reports" for n in plan.nodes)
+            and any(n.name == "resume_search" for n in plan.nodes)
+            and any(n.name == "intersect_ids" for n in plan.nodes)
+        )
+    if check == "unsupported_hris":
+        plan = try_heuristic_plan(q)
+        ans = (plan.clarify_question or "").lower() if plan else ""
+        return bool(
+            plan
+            and not plan.nodes
+            and plan.clarify_question
+            and ("pto" in ans or "leave" in ans)
+        )
     if check == "greeting_route":
         return RuleRouter().route(q) == RouterLabel.GREETING
     return False

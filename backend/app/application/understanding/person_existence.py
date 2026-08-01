@@ -57,6 +57,26 @@ NON_PERSON = frozenset(
         "remote",
         "managers",
         "manager",
+        # Question / count phrasing after "find …" must not become a person name.
+        "how",
+        "many",
+        "much",
+        "which",
+        "what",
+        "where",
+        "when",
+        "why",
+        "who",
+        "instead",
+        "work",
+        "works",
+        "working",
+        "know",
+        "knows",
+        "list",
+        "show",
+        "names",
+        "name",
     }
 )
 

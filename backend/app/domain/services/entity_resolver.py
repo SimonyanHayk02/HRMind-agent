@@ -23,21 +23,39 @@ class EntityResolver:
     def resolve_from_refs(
         self, name: str, entities: Sequence[EntityRef]
     ) -> tuple[UUID | None, float]:
-        """Resolve a name against session entity memory without a DB round-trip."""
+        """Resolve a name against session entity memory without a DB round-trip.
+
+        Returns a hit only when exactly one remembered person matches — avoids
+        picking the wrong Katya when several people share a first name.
+        """
         needle = (name or "").strip().lower()
         if not needle or not entities:
             return None, 0.0
+        hits: list[tuple[UUID, float]] = []
+        seen: set[UUID] = set()
         for ent in entities:
             aliases = [ent.display_name.lower(), *[a.lower() for a in ent.aliases]]
+            matched = False
+            conf = ent.confidence
             if needle in aliases or any(
-                a == needle or needle in a.split() or a in needle.split() for a in aliases
+                a == needle or needle in a.split() or a in needle.split()
+                for a in aliases
             ):
-                return ent.employee_id, ent.confidence
-            # First-name / last-name token match
-            for a in aliases:
-                tokens = a.split()
-                if needle in tokens or any(t.startswith(needle) for t in tokens if len(needle) > 2):
-                    return ent.employee_id, max(0.7, ent.confidence * 0.9)
+                matched = True
+            else:
+                for a in aliases:
+                    tokens = a.split()
+                    if needle in tokens or any(
+                        t.startswith(needle) for t in tokens if len(needle) > 2
+                    ):
+                        matched = True
+                        conf = max(0.7, ent.confidence * 0.9)
+                        break
+            if matched and ent.employee_id not in seen:
+                seen.add(ent.employee_id)
+                hits.append((ent.employee_id, conf))
+        if len(hits) == 1:
+            return hits[0]
         return None, 0.0
 
     async def resolve(

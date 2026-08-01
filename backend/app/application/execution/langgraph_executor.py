@@ -7,6 +7,7 @@ from app.application.execution.node_runner import NodeRunner
 from app.application.planning.plan_schema import ExecutionPlan
 from app.domain.auth import AuthContext
 from app.domain.session import EntityRef
+from app.domain.tools.base import ToolResult
 
 
 class LangGraphExecutor:
@@ -43,6 +44,16 @@ class LangGraphExecutor:
             ]
             if not ready:
                 state.errors.append("Deadlock in plan execution")
+                state.degraded = True
+                for nid, node in list(pending.items()):
+                    state.node_results[nid] = ToolResult(
+                        data=None,
+                        confidence=0.0,
+                        error="deadlock",
+                        degraded=True,
+                    )
+                    completed.add(nid)
+                    pending.pop(nid)
                 break
 
             results = await asyncio.gather(
@@ -52,4 +63,8 @@ class LangGraphExecutor:
                 state.node_results[node.id] = result
                 completed.add(node.id)
                 pending.pop(node.id)
+
+        if plan.nodes and len(completed) != len(plan.nodes):
+            state.degraded = True
+            state.errors.append("Incomplete plan execution")
         return state

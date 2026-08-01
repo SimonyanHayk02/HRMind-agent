@@ -69,6 +69,62 @@ def test_extract_cohort_prefers_intersect_not_union() -> None:
     assert prior not in extract_cohort_ids(state, None)
 
 
+def test_org_wide_headcount_resets_stale_cohort_and_filters() -> None:
+    from app.application.understanding.merge_query_state import apply_universe_marker
+    from app.domain.query_state import QueryState
+    from app.domain.session import ActiveReferent, ConstraintRef, SessionMemory
+
+    mem = SessionMemory(
+        session_id="s",
+        tenant_id="t",
+        user_id="u",
+        role=Role.RECRUITER,
+        last_employee_ids=["00000000-0000-0000-0000-0000000000aa"],
+        constraint_memory=[ConstraintRef(field="department", op="eq", value="Product")],
+        active_referent=ActiveReferent(
+            ids=["00000000-0000-0000-0000-0000000000aa"],
+            label="alice",
+            source_turn=1,
+        ),
+    )
+    out = apply_universe_marker(mem, QueryState(intent="count", confidence=0.9))
+    assert mem.last_employee_ids == []
+    assert mem.active_referent is None
+    assert mem.constraint_memory == []
+    assert [(c.field, c.value) for c in out] == [("_universe", "all")]
+
+
+def test_extract_cohort_empty_intersect_does_not_widen() -> None:
+    """Empty intersect must not fall through to the pre-intersect location ids."""
+    dubai_a = "00000000-0000-0000-0000-0000000000aa"
+    dubai_b = "00000000-0000-0000-0000-0000000000bb"
+    plan = ExecutionPlan(
+        nodes=[
+            PlanNode(
+                id="loc",
+                kind="tool",
+                name="resume_search",
+                params={"purpose": "location_cohort", "city": "Dubai"},
+            ),
+            PlanNode(id="locids", kind="operator", name="extract_employee_ids"),
+            PlanNode(id="locix", kind="operator", name="intersect_ids"),
+            PlanNode(id="sql1", kind="tool", name="sql", params={"count_only": True}),
+        ],
+        active_cohort_node="locix",
+    )
+    state = GraphState(
+        question="how much of them are from dubai",
+        auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
+        node_results={
+            "loc": ToolResult(data={"employee_ids": [dubai_a, dubai_b], "hits": []}),
+            "locids": [dubai_a, dubai_b],
+            "locix": [],
+            "sql1": ToolResult(data={"count": 0, "rows": [{"count": 0}]}),
+        },
+    )
+    assert extract_cohort_ids(state, plan) == []
+
+
 def test_entities_from_resume_hits() -> None:
     state = GraphState(
         question="q",
@@ -125,6 +181,8 @@ def test_rule_router_pure_greeting_only() -> None:
     router = RuleRouter()
     assert router.route("hello") == RouterLabel.GREETING
     assert router.route("thanks") == RouterLabel.GREETING
+    assert router.route("how are you") == RouterLabel.GREETING
+    assert router.route("who are you") == RouterLabel.GREETING
     assert router.route("thanks, say their names") is None
     assert router.route("hi who knows python") is None
 
@@ -248,7 +306,7 @@ def test_cohort_keeps_resume_matches() -> None:
     assert should_update_last_employee_ids(plan, "how many know python", ids)
 
 
-def test_extract_last_focus_from_facet_plan() -> None:
+def test_extract_last_focus_from_location_facet_plan() -> None:
     from app.application.memory.context_updates import extract_last_focus
 
     plan = ExecutionPlan(
@@ -256,14 +314,8 @@ def test_extract_last_focus_from_facet_plan() -> None:
             PlanNode(
                 id="facet",
                 kind="tool",
-                name="sql",
-                params={"mode": "constrained", "distinct": True, "columns": ["country"]},
-            ),
-            PlanNode(
-                id="sql1",
-                kind="tool",
-                name="sql",
-                params={"mode": "constrained", "count_distinct": "country"},
+                name="resume_search",
+                params={"purpose": "location_facet", "facet": "country", "facet_count": True},
             ),
         ]
     )
@@ -278,10 +330,10 @@ def test_extract_last_focus_from_facet_plan() -> None:
                         {"country": "USA"},
                         {"country": "UK"},
                     ],
-                    "row_count": 3,
+                    "count": 3,
+                    "employee_ids": [],
                 }
             ),
-            "sql1": ToolResult(data={"count": 3, "rows": [{"count": 3}]}),
         },
     )
     focus = extract_last_focus(state, plan)
@@ -291,15 +343,15 @@ def test_extract_last_focus_from_facet_plan() -> None:
     assert focus.values == ["Germany", "USA", "UK"]
 
 
-def test_formatter_lists_countries() -> None:
+def test_formatter_lists_countries_from_resume_facet() -> None:
     formatter = ResponseFormatter(FakeLLM())
     plan = ExecutionPlan(
         nodes=[
             PlanNode(
                 id="facet",
                 kind="tool",
-                name="sql",
-                params={"mode": "constrained", "distinct": True, "columns": ["country"]},
+                name="resume_search",
+                params={"purpose": "location_facet", "facet": "country"},
             )
         ],
         response_strategy="template",
@@ -311,7 +363,8 @@ def test_formatter_lists_countries() -> None:
             "facet": ToolResult(
                 data={
                     "rows": [{"country": "Germany"}, {"country": "France"}],
-                    "row_count": 2,
+                    "count": 2,
+                    "employee_ids": [],
                 }
             )
         },

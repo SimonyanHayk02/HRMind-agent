@@ -1,0 +1,16 @@
+{"id": "exact_full_name", "template": "when is {name}'s birthday?", "subject": "unique", "expect": "date", "why": "baseline: the phrasing a user reaches for first"}
+{"id": "possessive_no_apostrophe", "template": "when is {name} birthday", "subject": "unique", "expect": "date", "why": "chat input is rarely well punctuated"}
+{"id": "lowercase_bare", "template": "birthday of {name_lower}", "subject": "unique", "expect": "date", "why": "casing must not affect name matching"}
+{"id": "typo_in_surname", "template": "when is {name_typo}'s birthday?", "subject": "unique", "expect": "date", "why": "typo tolerance is why the trigram arm exists"}
+{"id": "first_name_only", "template": "when is {first_name}'s birthday?", "subject": "unique", "expect": "date_or_disambiguation", "why": "partial name: answer or disambiguate, never guess"}
+{"id": "reversed_name_order", "template": "when was {last_name} {first_name} born", "subject": "unique", "expect": "date_or_disambiguation", "why": "surname-first phrasing"}
+{"id": "how_old", "template": "how old is {name}?", "subject": "unique", "expect": "age", "why": "age is derived from the same retrieved date"}
+{"id": "birthday_wish", "template": "say happy birthday to {name}", "subject": "unique", "expect": "day_month", "why": "the wish flow must still ground on the retrieved date"}
+{"id": "namesake_group", "template": "when is {name}'s birthday?", "subject": "duplicate", "expect": "disambiguation", "why": "shared names must list every match"}
+{"id": "descriptive_role_and_city", "template": "when is the birthday of the {position} in {city}", "subject": "unique", "reference": "descriptive", "expect": "date_or_disambiguation", "why": "no name given: identity must come from the prose sections"}
+{"id": "resume_without_a_date", "template": "when is {name}'s birthday?", "subject": "no_dob", "expect": "refusal", "why": "a documented corpus gap must be admitted, not filled in"}
+{"id": "unknown_person", "template": "when is Zzz Nobody's birthday?", "subject": "none", "expect": "refusal", "why": "an unmatched name must not resolve to a stranger"}
+{"id": "leap_day_person", "template": "when is {name}'s birthday?", "subject": "leap_day", "expect": "date", "why": "29 February has no anniversary in most years"}
+{"id": "cohort_today", "template": "whose birthday is today?", "subject": "cohort", "scope": "today", "expect": "cohort", "why": "completeness, not top-k ranking"}
+{"id": "cohort_named_month", "template": "who has a birthday in {month}?", "subject": "cohort", "scope": "month", "expect": "cohort", "why": "every match in the month, from the whole corpus"}
+{"id": "cohort_upcoming", "template": "upcoming birthdays", "subject": "cohort", "scope": "upcoming", "expect": "cohort", "why": "date arithmetic over the full corpus"}

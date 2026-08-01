@@ -8,9 +8,13 @@ from typing import Any
 from app.application.execution.graph_state import GraphState
 from app.application.planning.plan_schema import ExecutionPlan
 from app.application.planning.unsupported import (
-    UNSUPPORTED_ANSWER,
     is_count_question,
     is_unsupported_topic,
+)
+from app.application.response.refusal import (
+    empty_unscoped_fallback,
+    has_format_evidence,
+    resolve_refusal,
 )
 from app.domain.tools.base import SourceRef, ToolResult
 from app.ports.llm import LLMClient
@@ -30,13 +34,15 @@ class ResponseFormatter:
         context_manager=None,
         auth=None,
     ) -> tuple[str, float, list[SourceRef], str | None]:
-        if plan.clarify_question:
-            # Empty-node plans are informational (e.g. unsupported topic), not UI clarifies.
-            clarify = None if not plan.nodes else plan.clarify_question
-            return plan.clarify_question, 0.4, [], clarify
-
-        if is_unsupported_topic(question):
-            return UNSUPPORTED_ANSWER, 0.4, [], None
+        effective_auth = auth or state.auth
+        refusal = resolve_refusal(plan, state, question, auth=effective_auth)
+        if refusal is not None:
+            return (
+                refusal.message,
+                refusal.confidence,
+                [],
+                refusal.ui_clarify,
+            )
 
         payloads: list[Any] = []
         sources: list[SourceRef] = []
@@ -52,13 +58,6 @@ class ResponseFormatter:
                     payloads.append(result.data)
                 sources.extend(result.sources)
                 confidence = min(confidence, result.confidence)
-                if result.data and isinstance(result.data, dict) and result.data.get("clarify"):
-                    return (
-                        str(result.data["clarify"]),
-                        result.confidence,
-                        sources,
-                        str(result.data["clarify"]),
-                    )
                 if result.data and isinstance(result.data, dict) and result.data.get("answer"):
                     if plan.response_strategy == "template" or node.name == "greeting":
                         return str(result.data["answer"]), result.confidence, sources, None
@@ -68,31 +67,27 @@ class ResponseFormatter:
                     and isinstance(result.data, dict)
                     and node.name == "employee"
                 ):
-                    pretty = _format_employee_tool_payload(result.data, question)
+                    pretty = _format_employee_tool_payload(
+                        _with_resume_location(result.data, state), question
+                    )
                     if pretty:
                         return pretty, result.confidence, sources, None
             elif result is not None:
                 payloads.append(result)
 
-        if state.degraded and not payloads:
-            detail = "; ".join(tool_errors or state.errors) or "a backend tool failed"
-            return (
-                f"I couldn't complete that request ({detail}). "
-                "Check that Postgres is running, then try again.",
-                0.0,
-                sources,
-                None,
-            )
-
         count_asked = is_count_question(question) or _plan_is_count_only(plan)
         facet_dim = _plan_facet_dimension(plan)
 
-        # Honest empty-result answers — never dump raw JSON or LLM "I don't have that"
+        # Honest empty-result answers — never dump raw JSON or LLM invent
         empty_msg = _format_empty_tool_results(question, plan, payloads, count_asked)
         if empty_msg is not None:
             return empty_msg, confidence, sources, None
 
         if plan.response_strategy == "template":
+            hint = _plan_answer_hint(plan)
+            tenure = _format_tenure_payloads(payloads, hint=hint)
+            if tenure:
+                return tenure, confidence, sources, None
             # Prefer explicit count payloads when the question/plan is a count
             # (cohort-materialization nodes may also return id rows).
             if count_asked:
@@ -153,7 +148,8 @@ class ResponseFormatter:
                     facet = _format_facet_rows(p["rows"], facet_dim)
                     if facet:
                         return facet, confidence, sources, None
-                    named = _format_employee_rows(p["rows"])
+                    ordered = _order_rows_by_plan_ids(p["rows"], plan)
+                    named = _format_employee_rows(ordered)
                     if named:
                         return named, confidence, sources, None
                 if isinstance(p, dict):
@@ -169,7 +165,7 @@ class ResponseFormatter:
                     None,
                 )
             if not payloads:
-                return UNSUPPORTED_ANSWER, 0.3, sources, None
+                return empty_unscoped_fallback(), 0.3, sources, None
             last = payloads[-1]
             if isinstance(last, list) and last and all(isinstance(x, str) for x in last):
                 return f"Found {len(last)} matching employees.", confidence, sources, None
@@ -182,7 +178,7 @@ class ResponseFormatter:
                 )
             # Do not turn an unscoped employee dump into a fake numeric answer
             if _looks_unscoped_dump(last) and not count_asked:
-                return UNSUPPORTED_ANSWER, 0.3, sources, None
+                return empty_unscoped_fallback(), 0.3, sources, None
             # Never leak raw tool JSON to the user
             if isinstance(last, dict):
                 pretty = _format_employee_tool_payload(last, question)
@@ -196,7 +192,11 @@ class ResponseFormatter:
                         sources,
                         "Which employee do you mean?",
                     )
-            return UNSUPPORTED_ANSWER, 0.3, sources, None
+            return empty_unscoped_fallback(), 0.3, sources, None
+
+        # Hard gate: never LLM-format without grounded evidence.
+        if not has_format_evidence(plan, state):
+            return empty_unscoped_fallback(), 0.3, sources, None
 
         path = self._prompts_dir / "response.md"
         system = (
@@ -214,7 +214,6 @@ class ResponseFormatter:
                 if pretty:
                     return pretty, confidence, sources, None
         packed = payloads
-        effective_auth = auth or state.auth
         if context_manager is not None:
             packed = context_manager.build_for_responder(payloads, auth=effective_auth)
         else:
@@ -224,12 +223,12 @@ class ResponseFormatter:
         user = json.dumps({"question": question, "results": packed}, default=str)
         answer = await self._llm.complete(system=system, user=user, temperature=0.0)
         if not answer or answer.strip().lower() in {"null", "none"}:
-            if not payloads or _looks_unscoped_dump(payloads[-1]):
-                return UNSUPPORTED_ANSWER, 0.3, sources, None
-            return UNSUPPORTED_ANSWER, 0.3, sources, None
+            return empty_unscoped_fallback(), 0.3, sources, None
         # Guard: LLM sometimes answers headcount when asked about missing domains
         if _is_spurious_headcount_answer(answer, question, payloads):
-            return UNSUPPORTED_ANSWER, 0.3, sources, None
+            return empty_unscoped_fallback(), 0.3, sources, None
+        if _has_ungrounded_claims(answer, payloads):
+            return empty_unscoped_fallback(), 0.3, sources, None
         return answer, confidence, sources, None
 
 
@@ -286,22 +285,104 @@ def _format_empty_tool_results(
     return None
 
 
+def _plan_answer_hint(plan: ExecutionPlan) -> str | None:
+    for node in plan.nodes:
+        hint = (node.params or {}).get("answer_hint")
+        if hint:
+            return str(hint)
+    return None
+
+
+def _format_tenure_payloads(payloads: list[Any], *, hint: str | None) -> str | None:
+    """Format allowlisted tenure / longest-tenured SQL template rows."""
+    for p in reversed(payloads):
+        if not isinstance(p, dict):
+            continue
+        rows = p.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        sample = rows[0] if isinstance(rows[0], dict) else {}
+        if "avg_tenure_days" in sample and "department" in sample:
+            bits = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                days = row.get("avg_tenure_days")
+                dept = row.get("department") or "Unknown"
+                if days is None:
+                    continue
+                years = float(days) / 365.25
+                bits.append(f"{dept}: {years:.1f} years avg ({int(float(days))} days)")
+            if not bits:
+                continue
+            body = "Average tenure by department (from hire_date): " + "; ".join(bits) + "."
+            return f"{body} {hint}" if hint else body
+        if "avg_tenure_days" in sample:
+            days = sample.get("avg_tenure_days")
+            if days is None:
+                continue
+            years = float(days) / 365.25
+            body = (
+                f"Average tenure is {years:.1f} years "
+                f"({int(float(days))} days), based on hire_date."
+            )
+            return f"{body} {hint}" if hint else body
+        if "tenure_days" in sample and "hire_date" in sample:
+            lines = []
+            for row in rows[:10]:
+                if not isinstance(row, dict):
+                    continue
+                name = " ".join(
+                    x
+                    for x in (row.get("first_name"), row.get("last_name"))
+                    if x
+                ).strip() or "Unknown"
+                hd = row.get("hire_date")
+                td = row.get("tenure_days")
+                dept = row.get("department") or ""
+                detail = f"hired {hd}" if hd else ""
+                if td is not None:
+                    detail = (
+                        f"{detail}; {int(float(td))} days tenure"
+                        if detail
+                        else f"{int(float(td))} days tenure"
+                    )
+                if dept:
+                    detail = f"{detail}; {dept}" if detail else dept
+                lines.append(f"{name} ({detail})" if detail else name)
+            if not lines:
+                continue
+            body = (
+                "Longest tenured by hire_date (not title seniority): "
+                + "; ".join(lines)
+                + "."
+            )
+            return f"{body} {hint}" if hint else body
+    return None
+
+
 def _plan_is_count_only(plan: ExecutionPlan) -> bool:
     return any(
-        n.name == "sql"
-        and (
-            bool((n.params or {}).get("count_only"))
-            or bool((n.params or {}).get("count_distinct"))
+        (
+            n.name == "sql"
+            and (
+                bool((n.params or {}).get("count_only"))
+                or bool((n.params or {}).get("count_distinct"))
+            )
         )
+        or (n.name == "resume_search" and bool((n.params or {}).get("facet_count")))
         for n in plan.nodes
     )
 
 
 def _plan_facet_dimension(plan: ExecutionPlan) -> str | None:
     for node in plan.nodes:
+        params = node.params or {}
+        # Resume-sourced facets (city, country) are aggregated by retrieval.
+        if node.name == "resume_search" and params.get("facet"):
+            return str(params["facet"])
         if node.name != "sql":
             continue
-        params = node.params or {}
         dim = params.get("count_distinct")
         if dim:
             return str(dim)
@@ -387,10 +468,93 @@ def _is_spurious_headcount_answer(answer: str, question: str, payloads: list[Any
     return False
 
 
+_PROPER_NAME_RE = re.compile(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b")
+_NUMBER_RE = re.compile(r"\b(\d{1,3}(?:,\d{3})+|\d+)\b")
+_STOP_NAMES = frozenset(
+    {
+        "the answer",
+        "no one",
+        "not found",
+        "i found",
+        "please provide",
+        "human resources",
+    }
+)
+
+
+def _payload_text_blob(payloads: list[Any]) -> str:
+    try:
+        return json.dumps(payloads, default=str).lower()
+    except (TypeError, ValueError):
+        return str(payloads).lower()
+
+
+def _has_ungrounded_claims(answer: str, payloads: list[Any]) -> bool:
+    """Reject llm_format answers that invent proper names or large counts."""
+    blob = _payload_text_blob(payloads)
+    if not blob.strip() or blob in {"null", "[]", "{}"}:
+        return True
+    for m in _PROPER_NAME_RE.finditer(answer or ""):
+        name = m.group(1).strip()
+        if name.lower() in _STOP_NAMES:
+            continue
+        # Require every token of a multi-word name to appear in tool payloads.
+        tokens = [t for t in re.split(r"\s+", name) if t]
+        if tokens and not all(t.lower() in blob for t in tokens):
+            return True
+    for m in _NUMBER_RE.finditer(answer or ""):
+        raw = m.group(1).replace(",", "")
+        if len(raw) > 6:
+            continue  # long ids
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        # Small ints are too ambiguous ("2 people"); gate material figures only.
+        if n < 10:
+            continue
+        if str(n) not in blob and raw not in blob:
+            return True
+    return False
+
+
+def _resume_location_facts(state: GraphState) -> dict[str, dict[str, Any]]:
+    """Location facts by employee id, from any retrieval node in this turn."""
+    out: dict[str, dict[str, Any]] = {}
+    for result in state.node_results.values():
+        data = result.data if isinstance(result, ToolResult) else result
+        if not isinstance(data, dict):
+            continue
+        for fact in data.get("facts") or []:
+            if not isinstance(fact, dict) or not fact.get("employee_id"):
+                continue
+            if fact.get("city") or fact.get("country"):
+                out[str(fact["employee_id"])] = fact
+    return out
+
+
+def _with_resume_location(data: dict[str, Any], state: GraphState) -> dict[str, Any]:
+    """Attach the retrieved place to an employee payload.
+
+    A profile still shows a Location line, but the value now comes from the
+    person's resume and is matched on the id the employee tool resolved, so a
+    namesake's city can never be printed under the wrong name.
+    """
+    eid = str(data.get("id") or "")
+    fact = _resume_location_facts(state).get(eid) if eid else None
+    if not fact:
+        return data
+    return {**data, "city": fact.get("city"), "country": fact.get("country")}
+
+
 def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | None:
     """Human answers for employee tool profile / manager / roster payloads."""
     if data.get("clarify"):
         return str(data["clarify"])
+    if data.get("updated") and data.get("answer"):
+        return str(data["answer"])
+    if data.get("answer") and "status" in (question or "").lower():
+        return str(data["answer"])
 
     # Manager chain
     if "employee" in data and "managers" in data:
@@ -410,9 +574,15 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
             return f"{emp_name}'s manager is {mgr_name} ({extra})."
         return f"{emp_name}'s manager is {mgr_name}."
 
-    # Department roster
-    if isinstance(data.get("employees"), list) and data["employees"]:
+    # Department / direct-reports roster
+    if isinstance(data.get("employees"), list):
         rows = data["employees"]
+        mgr = data.get("manager") if isinstance(data.get("manager"), dict) else None
+        if not rows:
+            if mgr:
+                label = _person_label(mgr) or "That manager"
+                return f"{label} has no direct reports on file."
+            return None
         if all(isinstance(r, dict) for r in rows):
             # Map to row formatter fields
             mapped = []
@@ -426,7 +596,12 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
                         "id": r.get("id"),
                     }
                 )
-            return _format_employee_rows(mapped)
+            named = _format_employee_rows(mapped)
+            if named and mgr:
+                label = _person_label(mgr)
+                if label:
+                    return f"Direct reports of {label}: {named}"
+            return named
 
     # Single profile
     if data.get("full_name") or (data.get("first_name") and data.get("id")):
@@ -459,6 +634,14 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
             if dept:
                 return f"{name} works in {dept}."
             return f"I don't have a department on file for {name}."
+        # Agent flag (employees.status) — distinct from employment_status.
+        if re.search(r"\bstatus\b", q) and "employment" not in q:
+            flag = data.get("status")
+            if isinstance(flag, bool):
+                label = "active" if flag else "inactive"
+                return f"{name}'s status is {label}."
+            if flag is not None:
+                return f"{name}'s status is {flag}."
         bits = [name]
         for label, key in (
             ("Position", "position"),
@@ -466,7 +649,8 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
             ("Education", "education"),
             ("Location", None),
             ("Email", "email"),
-            ("Status", "employment_status"),
+            ("Employment status", "employment_status"),
+            ("Status", "status"),
         ):
             if key is None:
                 loc = ", ".join(x for x in (data.get("city"), data.get("country")) if x)
@@ -474,7 +658,9 @@ def _format_employee_tool_payload(data: dict[str, Any], question: str) -> str | 
                     bits.append(f"Location: {loc}")
                 continue
             val = data.get(key)
-            if val:
+            if key == "status" and isinstance(val, bool):
+                bits.append(f"{label}: {'active' if val else 'inactive'}")
+            elif val is not None and val != "":
                 bits.append(f"{label}: {val}")
         return "\n".join(bits) if len(bits) > 1 else name
     return None
@@ -488,6 +674,30 @@ def _person_label(row: dict[str, Any]) -> str:
     first = str(row.get("first_name") or "").strip()
     last = str(row.get("last_name") or "").strip()
     return f"{first} {last}".strip() or "Unknown"
+
+
+def _plan_employee_id_order(plan: ExecutionPlan) -> list[str]:
+    """Requested employee_ids order from the plan, if any."""
+    for node in plan.nodes:
+        if node.name != "sql":
+            continue
+        filters = (node.params or {}).get("filters") or {}
+        ids = filters.get("employee_ids")
+        if isinstance(ids, list) and ids:
+            return [str(x) for x in ids if x]
+    return []
+
+
+def _order_rows_by_plan_ids(rows: list[Any], plan: ExecutionPlan) -> list[Any]:
+    """Second guarantee that bullets match the cohort order the user just narrowed."""
+    order = _plan_employee_id_order(plan)
+    if not order:
+        return rows
+    rank = {eid: i for i, eid in enumerate(order)}
+    named = [r for r in rows if isinstance(r, dict) and r.get("id")]
+    rest = [r for r in rows if not (isinstance(r, dict) and r.get("id"))]
+    named.sort(key=lambda r: rank.get(str(r.get("id")), len(rank)))
+    return named + rest
 
 
 def _format_employee_rows(rows: list[Any]) -> str | None:

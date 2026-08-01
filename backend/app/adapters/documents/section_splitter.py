@@ -4,6 +4,8 @@ import re
 
 SECTION_HEADERS = [
     "Summary",
+    "Location",
+    "Personal",
     "Experience",
     "Skills",
     "Projects",

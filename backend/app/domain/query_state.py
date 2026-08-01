@@ -23,6 +23,13 @@ class QueryState(BaseModel):
         "skill_search",
         "profile",
         "manager",
+        "reports",
+        "set_status",
+        "birthday",
+        "languages",
+        "certifications",
+        "tenure_agg",
+        "longest_tenured",
         "clarify",
         "unsupported",
         "unknown",
@@ -32,6 +39,20 @@ class QueryState(BaseModel):
     facet_dimension: str | None = None
     skill: str | None = None
     person_name: str | None = None
+    # When set, person-attribute plans bind to these ids (ordinal / pronoun).
+    person_employee_ids: list[str] = Field(default_factory=list)
+    # Target value for intent=set_status (employees.status boolean flag).
+    status_value: bool | None = None
+    status_email: str | None = None
+    status_employee_id: str | None = None
+    # intent=birthday: dates exist only in resume text, so these route to RAG.
+    birthday_scope: Literal["person", "today", "month", "upcoming", "closest"] | None = None
+    birthday_month: int | None = None
+    wants_age: bool = False
+    wants_wish: bool = False
+    # Resume attribute filters (languages / certifications).
+    language: str | None = None
+    certification: str | None = None
     hire_year_gt: int | None = None
     want_count: bool = False
     confidence: float = 0.0

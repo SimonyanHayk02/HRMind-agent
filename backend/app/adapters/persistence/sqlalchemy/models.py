@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -26,13 +26,13 @@ class EmployeeModel(Base):
     position: Mapped[str] = mapped_column(String(120), nullable=False)
     salary: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     hire_date: Mapped[date] = mapped_column(Date, nullable=False)
-    country: Mapped[str] = mapped_column(String(100), nullable=False)
-    city: Mapped[str] = mapped_column(String(100), nullable=False)
     manager_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("employees.id"), nullable=True
     )
     education: Mapped[str | None] = mapped_column(Text, nullable=True)
     employment_status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    # Agent flag (separate from employment_status and resumes.status ingest lifecycle).
+    status: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

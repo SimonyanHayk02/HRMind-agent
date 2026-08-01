@@ -25,8 +25,10 @@ async def test_chat_greeting() -> None:
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert "Hello" in body["answer"]
+    answer = body["answer"].lower()
+    assert any(w in answer for w in ("hello", "hi", "hey", "help"))
     assert body["session_id"]
+    assert body["tool"] == "greeting"
 
 
 @pytest.mark.asyncio

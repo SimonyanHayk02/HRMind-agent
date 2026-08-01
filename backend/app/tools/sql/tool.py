@@ -66,6 +66,8 @@ class SqlTool:
         count_only = bool(params.get("count_only"))
         distinct = bool(params.get("distinct"))
         count_distinct = params.get("count_distinct")
+        template = params.get("template")
+        limit = params.get("limit")
         filters = dict(params.get("filters") or {})
         if params.get("employee_ids") is not None:
             raw = params.get("employee_ids")
@@ -90,6 +92,8 @@ class SqlTool:
             count_only=count_only,
             distinct=distinct,
             count_distinct=count_distinct,
+            template=str(template) if template else None,
+            limit=int(limit) if limit is not None else None,
         )
         key = cache_keys.build("sql", auth, sql=sql, params=bind)
         cached = await self._cache.get(key)
@@ -101,7 +105,15 @@ class SqlTool:
 
     async def _nl2sql(self, params: dict[str, Any], *, auth: AuthContext) -> ToolResult:
         question = params.get("question") or ""
-        schema = "TABLE employees(id, first_name, last_name, email, department, position, salary, hire_date, country, city, manager_id, education, employment_status)"
+        schema = (
+            "TABLE employees(id, first_name, last_name, email, department, position, salary, "
+            "hire_date, manager_id, education, employment_status, status). "
+            "This is the only table you may query. "
+            "There are no city, country or location columns anywhere: work location is "
+            "written in resume documents and is retrieved separately, so never select or "
+            "filter on it and never join another table. "
+            "employees.status is a boolean agent flag (default false), not employment_status."
+        )
         system = self._prompt_loader("sql_nl2sql") or (
             "Generate a single PostgreSQL SELECT for the employees table. Return only SQL."
         )

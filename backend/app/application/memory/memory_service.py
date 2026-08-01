@@ -134,6 +134,14 @@ class MemoryService:
         session.last_employee_ids = ordered
         return await self.save(session)
 
+    async def set_last_listed(
+        self, session: SessionMemory, listed: list[EntityRef]
+    ) -> SessionMemory:
+        """Persist the display-ordered name list for ordinal follow-ups."""
+        capped = list(listed)[: self._max_entity_memory]
+        session.last_listed = capped
+        return await self.save(session)
+
     async def set_last_focus(self, session: SessionMemory, focus: LastFocus) -> SessionMemory:
         session.last_focus = focus
         return await self.save(session)
@@ -176,6 +184,7 @@ class MemoryService:
 
     async def clear_referents(self, session: SessionMemory) -> SessionMemory:
         session.last_employee_ids = []
+        session.last_listed = []
         session.active_referent = None
         session.last_focus = None
         session.person_bindings = {}
@@ -188,7 +197,11 @@ class MemoryService:
     async def _maybe_summarize(self, session: SessionMemory) -> SessionMemory:
         if len(session.messages) > self._summary_trigger and self._summarizer is not None:
             older = session.messages[: -self._max_history // 2]
-            summary = await self._summarizer.summarize(session.summary, older)
-            session.summary = summary
+            # Prefer structured/extractive digests over free-form LLM invention.
+            structured = self._summarizer.summarize_from_memory(session)
+            extractive = await self._summarizer.summarize(session.summary, older)
+            session.summary = " ".join(
+                p for p in (structured, extractive) if p and p.strip()
+            ).strip() or extractive
             session.messages = session.messages[-self._max_history // 2 :]
         return await self.save(session)

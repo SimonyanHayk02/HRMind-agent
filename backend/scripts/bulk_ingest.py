@@ -59,6 +59,8 @@ async def main() -> None:
                     employee_id=str(resume.employee_id),
                     employee_name=f"{emp.first_name} {emp.last_name}",
                     resume_id=str(resume.id),
+                    position=emp.position,
+                    department=emp.department,
                 )
                 resume.status = "ready"
                 resume.error = None

@@ -10,6 +10,9 @@ from app.domain.errors import ValidationFailedError
 from app.domain.policies.column_policy import allowed_columns
 
 FORBIDDEN = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"}
+# Generated SQL reads employees and nothing else. Resume-sourced facts (location,
+# birth date, skills) are retrieved from the chunk corpus, so neither `resumes`
+# nor `resume_chunks` is reachable from here.
 ALLOWED_TABLES = {"employees"}
 
 
@@ -33,10 +36,13 @@ def validate_sql(sql: str, auth: AuthContext, *, max_rows: int = 200) -> str:
         raise ValidationFailedError(f"Table not allowed: {tables - ALLOWED_TABLES}")
 
     cols = allowed_columns(auth.role, department=auth.department_id, target_department=auth.department_id)
+    # SELECT * bypasses column ACL — reject and require an explicit projection.
+    if parsed.find(exp.Star):
+        raise ValidationFailedError(
+            "SELECT * is not allowed; project explicit columns only"
+        )
     for col in parsed.find_all(exp.Column):
         name = col.name.lower()
-        if name == "*":
-            continue
         if name not in cols and name not in {"id", "count"}:
             # allow aliases like count
             if name not in cols:

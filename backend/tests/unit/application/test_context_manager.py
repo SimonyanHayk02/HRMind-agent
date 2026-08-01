@@ -61,11 +61,18 @@ def test_resolve_and_clear_on_greeting() -> None:
             session, LastFocus(kind="cohort", dimension="employees")
         )
 
+        # Soft greetings keep the cohort so "hey → names please" still works.
         session, working = await mgr.prepare_turn("hello", session)
+        assert working.resolved.clear_referents is False
+        assert session.last_employee_ids == ["00000000-0000-0000-0000-000000000001"]
+        assert session.active_referent is not None
+        assert session.last_focus is not None
+
+        # Explicit topic shift still clears.
+        session, working = await mgr.prepare_turn("start over — find React", session)
         assert working.resolved.clear_referents is True
         assert session.last_employee_ids == []
         assert session.active_referent is None
-        assert session.last_focus is None
 
     asyncio.run(_run())
 
@@ -85,6 +92,108 @@ def test_resolve_them_keeps_ids() -> None:
         assert working.resolved.refers_to_prior is True
         assert working.resolved.employee_ids == [eid]
         assert working.resume_retrieval_allowed is False
+
+    asyncio.run(_run())
+
+
+def test_commit_writes_last_listed_from_name_rows_only() -> None:
+    async def _run() -> None:
+        mgr = _mgr()
+        session = await mgr.load(None, _auth())
+        e1 = "00000000-0000-0000-0000-000000000001"
+        e2 = "00000000-0000-0000-0000-000000000002"
+        plan = ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={
+                        "mode": "constrained",
+                        "filters": {"employee_ids": [e1, e2]},
+                        "columns": ["id", "first_name", "last_name"],
+                    },
+                )
+            ],
+            active_cohort_node="sql1",
+        )
+        state = GraphState(
+            question="names please",
+            auth=_auth(),
+            node_results={
+                "sql1": ToolResult(
+                    data={
+                        "rows": [
+                            {
+                                "id": e1,
+                                "first_name": "Kara",
+                                "last_name": "Petrov",
+                            },
+                            {
+                                "id": e2,
+                                "first_name": "Maya",
+                                "last_name": "Khan",
+                            },
+                        ]
+                    }
+                )
+            },
+        )
+        session = await mgr.commit(
+            session, question="names please", plan=plan, state=state
+        )
+        assert [str(e.employee_id) for e in session.last_listed] == [e1, e2]
+        assert session.last_listed[0].display_name == "Kara Petrov"
+
+        # Facet value rows must not become last_listed.
+        facet_plan = ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={"mode": "constrained", "distinct": True, "columns": ["country"]},
+                )
+            ]
+        )
+        facet_state = GraphState(
+            question="names please",
+            auth=_auth(),
+            node_results={
+                "sql1": ToolResult(
+                    data={"rows": [{"country": "Germany"}, {"country": "USA"}]}
+                )
+            },
+        )
+        session = await mgr.commit(
+            session, question="names please", plan=facet_plan, state=facet_state
+        )
+        # Unchanged — still the employee name list.
+        assert [str(e.employee_id) for e in session.last_listed] == [e1, e2]
+
+        # Count-only does not overwrite last_listed.
+        count_plan = ExecutionPlan(
+            nodes=[
+                PlanNode(
+                    id="sql1",
+                    kind="tool",
+                    name="sql",
+                    params={"mode": "constrained", "count_only": True},
+                )
+            ]
+        )
+        count_state = GraphState(
+            question="how many?",
+            auth=_auth(),
+            node_results={"sql1": ToolResult(data={"count": 2})},
+        )
+        session = await mgr.commit(
+            session, question="how many?", plan=count_plan, state=count_state
+        )
+        assert [str(e.employee_id) for e in session.last_listed] == [e1, e2]
+
+        session = await mgr.clear_referents(session, reason="test")
+        assert session.last_listed == []
 
     asyncio.run(_run())
 
@@ -138,6 +247,46 @@ def test_commit_sets_named_set_and_person_bindings() -> None:
     asyncio.run(_run())
 
 
+def test_commit_preserves_cohort_on_oos_refusal() -> None:
+    async def _run() -> None:
+        mgr = _mgr()
+        session = await mgr.load(None, _auth())
+        eid = "00000000-0000-0000-0000-000000000099"
+        prior = ExecutionPlan(
+            nodes=[
+                PlanNode(id="ids", kind="operator", name="extract_employee_ids"),
+            ],
+            active_cohort_node="ids",
+        )
+        prior_state = GraphState(
+            question="engineers",
+            auth=_auth(),
+            node_results={"ids": [eid]},
+        )
+        session = await mgr.commit(
+            session, question="engineers", plan=prior, state=prior_state
+        )
+        assert session.last_employee_ids == [eid]
+
+        oos = ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question="I don't have that information.",
+            refusal_code="out_of_scope",
+        )
+        empty = GraphState(question="PTO?", auth=_auth(), node_results={})
+        session = await mgr.commit(
+            session,
+            question="how much PTO do we get?",
+            plan=oos,
+            state=empty,
+            refusal_code="out_of_scope",
+        )
+        assert session.last_employee_ids == [eid]
+
+    asyncio.run(_run())
+
+
 def test_planner_packet_caps_ids_and_summary() -> None:
     ids = [str(uuid4()) for _ in range(50)]
     memory = SessionMemory(
@@ -150,7 +299,7 @@ def test_planner_packet_caps_ids_and_summary() -> None:
         active_referent=ActiveReferent(ids=ids, label="big set"),
     )
     packet = build_planner_packet(
-        question="q",
+        question="how many of them know Python?",
         auth=_auth(),
         memory=memory,
         tools=[],
@@ -159,6 +308,7 @@ def test_planner_packet_caps_ids_and_summary() -> None:
         max_ids=20,
         max_summary_chars=100,
     )
+    assert packet["context_need"] == "anaphora"
     assert len(packet["last_employee_ids"]) == 20
     assert packet["last_employee_ids_truncated"] is True
     assert len(packet["summary"]) <= 100

@@ -1,0 +1,5 @@
+{"id": "who_has_aws_cert", "template": "who has AWS Certified?", "subject": "none", "expect": "cohort_or_empty", "why": "cert attribute vs skill RAG"}
+{"id": "who_has_cka", "template": "who holds a CKA certification?", "subject": "none", "expect": "cohort_or_empty", "why": "closed vocab cert match"}
+{"id": "person_certs", "template": "what certifications does {name} have?", "subject": "unique", "expect": "certs_or_missing", "why": "person certifications attribute"}
+{"id": "among_them_pmp", "template": "who among them has a PMP?", "subject": "prior", "expect": "scoped_cohort_or_empty", "why": "prior-set scoping on cert cohort"}
+{"id": "aws_experience_not_cert", "template": "who has AWS experience?", "subject": "none", "expect": "skill_rag", "why": "experience wording must not steal cert attribute"}

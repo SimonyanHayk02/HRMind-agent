@@ -22,6 +22,8 @@ class IngestService:
         employee_id: str,
         employee_name: str,
         resume_id: str,
+        position: str | None = None,
+        department: str | None = None,
     ) -> int:
         from pathlib import Path
 
@@ -30,4 +32,6 @@ class IngestService:
             employee_id=employee_id,
             employee_name=employee_name,
             resume_id=resume_id,
+            position=position,
+            department=department,
         )

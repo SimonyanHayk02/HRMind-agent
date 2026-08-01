@@ -19,7 +19,13 @@ def should_update_last_employee_ids(
     has_unscoped_nl2sql = False
     has_unscoped_count = False
 
-    has_attribute_filter = False
+    # A place is retrieved, not filtered, so a location retrieval node is as much
+    # a scoping signal as a department filter used to be.
+    has_attribute_filter = any(
+        n.name == "resume_search"
+        and ((n.params or {}).get("city") or (n.params or {}).get("country"))
+        for n in plan.nodes
+    )
     for node in plan.nodes:
         if node.name != "sql":
             continue
@@ -28,8 +34,7 @@ def should_update_last_employee_ids(
         bindings = node.input_bindings or {}
         scoped = bool(filters.get("employee_ids") or bindings.get("employee_ids"))
         attr = any(
-            filters.get(k)
-            for k in ("department", "city", "country", "position", "hire_date_gt")
+            filters.get(k) for k in ("department", "position", "hire_date_gt")
         )
         if scoped:
             has_scoped_ids = True

@@ -18,6 +18,21 @@ BSc
     assert "Python" in sections["Skills"]
 
 
+def test_section_splitter_extracts_location() -> None:
+    text = """Summary
+Experienced Recruiter in People based in London, UK.
+
+Location
+London, UK
+
+Skills
+Python
+"""
+    sections = split_sections(text)
+    assert sections["Location"] == "London, UK"
+    assert sections["Summary"] == "Experienced Recruiter in People based in London, UK."
+
+
 def test_semantic_chunker_splits_long() -> None:
     sections = {"Experience": "x\n" * 500}
     chunks = chunk_sections(sections, max_chars=100)

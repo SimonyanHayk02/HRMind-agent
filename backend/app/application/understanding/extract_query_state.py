@@ -3,15 +3,23 @@ from __future__ import annotations
 import re
 
 from app.application.planning.heuristic_planner import (
+    _LONGEST_TENURED_RE,
+    _TENURE_RE,
+    _hire_date_filters,
     is_list_followup,
     refers_to_prior_set,
 )
 from app.application.planning.unsupported import is_unsupported_topic
+from app.application.understanding.birthday import extract_birthday
+from app.application.understanding.certifications import extract_certification
+from app.application.understanding.languages import extract_language
+from app.application.understanding.person_existence import extract_person_existence_name
 from app.application.understanding.role_phrases import match_role_positions
+from app.application.understanding.status_change import extract_status_change
 from app.domain.query_state import FilterSlot, QueryState
 from app.domain.schema_catalog import SchemaCatalog
 from app.domain.session import SessionMemory
-from app.tools.employee.tool import extract_manager_subject
+from app.tools.employee.tool import extract_manager_subject, extract_reports_subject
 
 _COUNT_RE = re.compile(r"\b(how many|how much|count|number of)\b", re.I)
 _WHICH_OF_THEM_SKILL_RE = re.compile(
@@ -42,6 +50,10 @@ _ABOUT_RE = re.compile(
     re.I,
 )
 _YEAR_RE = re.compile(r"(?:after|since)\s+(20\d{2})", re.I)
+_JOINED_RE = re.compile(
+    r"\b(?:joined|hired|started(?:\s+work(?:ing)?)?|new\s+hires?)\b",
+    re.I,
+)
 
 _FACET_WORD = {
     "countries": "country",
@@ -74,9 +86,94 @@ def extract_query_state(
         state.confidence = 1.0
         return state
 
+    # Birthdays come only from resume text, so claim them before person-lookup rules.
+    birthday_req = extract_birthday(q)
+    if birthday_req.matched:
+        state.intent = "birthday"
+        state.birthday_scope = birthday_req.scope
+        state.birthday_month = birthday_req.month
+        state.person_name = birthday_req.person_name
+        state.wants_age = birthday_req.wants_age
+        state.wants_wish = birthday_req.wants_wish
+        state.refers_to_prior = refers_to_prior_set(q)
+        has_subject = bool(birthday_req.person_name) or birthday_req.scope != "person"
+        state.confidence = 0.95 if has_subject else 0.85
+        if not has_subject:
+            state.notes.append("missing_person")
+        return state
+
+    language_req = extract_language(q)
+    if language_req.matched:
+        state.intent = "languages"
+        state.language = language_req.language
+        state.person_name = language_req.person_name
+        state.refers_to_prior = language_req.refers_to_prior or refers_to_prior_set(q)
+        if language_req.scope == "person":
+            state.confidence = 0.95 if language_req.person_name else 0.85
+        else:
+            state.confidence = 0.95 if language_req.language else 0.85
+        return state
+
+    cert_req = extract_certification(q)
+    if cert_req.matched:
+        state.intent = "certifications"
+        state.certification = cert_req.certification
+        state.person_name = cert_req.person_name
+        state.refers_to_prior = cert_req.refers_to_prior or refers_to_prior_set(q)
+        if cert_req.scope == "person":
+            state.confidence = 0.95 if cert_req.person_name else 0.85
+        else:
+            state.confidence = 0.95 if cert_req.certification else 0.85
+        return state
+
+    # Status-flag writes take priority over profile/manager/facet "status" wording.
+    status_req = extract_status_change(q)
+    if status_req.matched:
+        state.intent = "set_status"
+        state.person_name = status_req.person_name
+        state.status_value = status_req.status_value
+        state.status_email = status_req.email
+        state.status_employee_id = status_req.employee_id
+        if status_req.city:
+            state.filters.append(
+                FilterSlot(field="city", op="eq", value=status_req.city, confidence=0.95)
+            )
+        if status_req.country:
+            state.filters.append(
+                FilterSlot(
+                    field="country", op="eq", value=status_req.country, confidence=0.95
+                )
+            )
+        has_subject = bool(
+            status_req.person_name
+            or status_req.email
+            or status_req.employee_id
+            or status_req.city
+            or status_req.country
+        )
+        if has_subject and status_req.status_value is not None:
+            state.confidence = 0.95
+        else:
+            state.confidence = 0.85
+            if not has_subject:
+                state.notes.append("missing_person")
+            if status_req.status_value is None:
+                state.notes.append("missing_status_value")
+        return state
+
     state.refers_to_prior = refers_to_prior_set(q)
     state.filters = _extract_filters(q, catalog)
     state.want_count = bool(_COUNT_RE.search(q) or _WHICH_OF_THEM_SKILL_RE.search(q))
+
+    # Tenure analytics must beat department-list / "who is …" profile salvage.
+    if _TENURE_RE.search(q):
+        state.intent = "tenure_agg"
+        state.confidence = 0.95
+        return _merge_prior_filters(state, memory)
+    if _LONGEST_TENURED_RE.search(q):
+        state.intent = "longest_tenured"
+        state.confidence = 0.95
+        return _merge_prior_filters(state, memory)
 
     year = _YEAR_RE.search(q)
     if year:
@@ -89,12 +186,57 @@ def extract_query_state(
                 confidence=0.9,
             )
         )
+    elif _JOINED_RE.search(q):
+        hire = _hire_date_filters(q)
+        if hire:
+            if "hire_date_gt" in hire:
+                state.filters.append(
+                    FilterSlot(
+                        field="hire_date",
+                        op="gt",
+                        value=hire["hire_date_gt"],
+                        confidence=0.9,
+                    )
+                )
+            if "hire_date_gte" in hire:
+                state.filters.append(
+                    FilterSlot(
+                        field="hire_date",
+                        op="gte",
+                        value=hire["hire_date_gte"],
+                        confidence=0.9,
+                    )
+                )
+            if "hire_date_lt" in hire:
+                state.filters.append(
+                    FilterSlot(
+                        field="hire_date",
+                        op="lt",
+                        value=hire["hire_date_lt"],
+                        confidence=0.9,
+                    )
+                )
+            state.intent = "list" if not state.want_count else "count"
+            state.confidence = 0.9
+            return _merge_prior_filters(state, memory)
 
     skill = _SKILL_RE.search(q)
     if skill and _SKILL_INTENT_RE.search(q):
         state.skill = skill.group(1)
         state.intent = "skill_search"
         state.confidence = 0.85
+        return _merge_prior_filters(state, memory)
+
+    reports = extract_reports_subject(q)
+    if reports:
+        state.intent = "reports"
+        state.person_name = reports
+        skill = _SKILL_RE.search(q)
+        if skill and _SKILL_INTENT_RE.search(q):
+            state.skill = skill.group(1)
+            state.confidence = 0.92
+        else:
+            state.confidence = 0.9
         return _merge_prior_filters(state, memory)
 
     mgr = extract_manager_subject(q)
@@ -111,9 +253,21 @@ def extract_query_state(
         state.confidence = 0.85
         return state
 
+    # "do we have Sofia?" — existence / directory lookup (not prior-cohort refine).
+    existence = extract_person_existence_name(q)
+    if existence:
+        state.intent = "profile"
+        state.person_name = existence
+        state.confidence = 0.88
+        return state
+
     facet = _FACET_RE.search(q)
     if facet:
-        raw = next((g for g in facet.groups() if g), None)
+        # Prefer a dimension word ("cities") over a qualifier ("different").
+        raw = next(
+            (g for g in facet.groups() if g and g.lower() in _FACET_WORD),
+            None,
+        )
         dim = _FACET_WORD.get((raw or "").lower())
         if dim:
             state.facet_dimension = dim

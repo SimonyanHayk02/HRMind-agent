@@ -9,8 +9,9 @@ from app.domain.errors import ForbiddenError
 TOOL_PERMISSIONS: dict[str, set[Role]] = {
     "greeting": {Role.RECRUITER, Role.MANAGER, Role.EMPLOYEE},
     "employee": {Role.RECRUITER, Role.MANAGER, Role.EMPLOYEE},
+    # Needed so any role can resolve people for status updates via resumes.
+    "resume_search": {Role.RECRUITER, Role.MANAGER, Role.EMPLOYEE},
     "sql": {Role.RECRUITER, Role.MANAGER},
-    "resume_search": {Role.RECRUITER, Role.MANAGER},
     "clarify": {Role.RECRUITER, Role.MANAGER, Role.EMPLOYEE},
 }
 

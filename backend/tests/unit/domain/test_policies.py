@@ -27,7 +27,9 @@ def test_tool_permissions() -> None:
     emp = AuthContext(user_id="u", tenant_id="t", role=Role.EMPLOYEE, employee_id="1")
     assert can_use_tool(emp, "greeting")
     assert not can_use_tool(emp, "sql")
-    assert not can_use_tool(emp, "resume_search")
+    # Employees may use resume_search so status updates can resolve people via RAG.
+    assert can_use_tool(emp, "resume_search")
+    assert can_use_tool(emp, "employee")
 
 
 def test_access_employee() -> None:

@@ -16,5 +16,9 @@ class ChatResponse(BaseModel):
     confidence: float = 1.0
     sources: list[SourceRef] = Field(default_factory=list)
     clarify: str | None = None
+    # Which tool answered: "sql", "resume_search", "employee", "greeting", "clarify".
+    # Hybrid plans join their tools with "+", e.g. "sql+resume_search". None when no
+    # tool produced anything, such as a clarify-only turn or a total failure.
+    tool: str | None = None
     trace_id: str | None = None
     degraded: bool = False

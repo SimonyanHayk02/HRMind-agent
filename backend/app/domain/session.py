@@ -65,6 +65,9 @@ class SessionMemory(BaseModel):
     entity_memory: list[EntityRef] = Field(default_factory=list)
     constraint_memory: list[ConstraintRef] = Field(default_factory=list)
     last_employee_ids: list[str] = Field(default_factory=list)
+    # Display-ordered employees from the last name list shown to the user.
+    # Ordinals ("the first person") index this — never last_employee_ids alone.
+    last_listed: list[EntityRef] = Field(default_factory=list)
     last_focus: LastFocus | None = None
     active_referent: ActiveReferent | None = None
     named_sets: dict[str, list[str]] = Field(default_factory=dict)

@@ -31,10 +31,18 @@ def apply_universe_marker(session: SessionMemory, state: QueryState) -> list[Con
 
     When refining (anaphora or new filters), drop a stale `_universe=all` marker
     from the session so it does not pollute later planner packets.
+
+    Org-wide headcount resets the filter stack and the active "them" cohort so a
+    later "of them in Dubai" is not still bound to a single profile subject or an
+    old department constraint.
     """
     constraints = constraints_from_query_state(state)
     if should_set_universe_all(state):
-        constraints.append(ConstraintRef(field="_universe", op="eq", value="all"))
+        session.last_employee_ids = []
+        session.last_listed = []
+        session.active_referent = None
+        session.constraint_memory = []
+        constraints = [ConstraintRef(field="_universe", op="eq", value="all")]
     elif state.refers_to_prior or state.filters or state.skill:
         # Drop stale universe-only marker when refining
         session.constraint_memory = [

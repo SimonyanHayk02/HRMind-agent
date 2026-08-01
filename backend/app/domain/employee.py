@@ -19,11 +19,11 @@ class Employee(BaseModel):
     position: str
     salary: Decimal | None = None
     hire_date: date
-    country: str
-    city: str
     manager_id: UUID | None = None
     education: str | None = None
     employment_status: EmploymentStatus = EmploymentStatus.ACTIVE
+    # Agent boolean flag (not employment_status; not resumes ingest status).
+    status: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

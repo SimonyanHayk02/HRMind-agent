@@ -1,0 +1,5 @@
+{"id": "who_speaks_german", "template": "who speaks German?", "subject": "none", "expect": "cohort_or_empty", "why": "languages cohort from labelled resume section"}
+{"id": "who_speaks_arabic", "template": "who speaks Arabic?", "subject": "none", "expect": "cohort_or_empty", "why": "closed vocab language match"}
+{"id": "person_languages", "template": "what languages does {name} speak?", "subject": "unique", "expect": "languages_or_missing", "why": "person languages attribute"}
+{"id": "among_them_german", "template": "who among them speaks German?", "subject": "prior", "expect": "scoped_cohort_or_empty", "why": "prior-set scoping on language cohort"}
+{"id": "fluent_french", "template": "who is fluent in French?", "subject": "none", "expect": "cohort_or_empty", "why": "alternate phrasing maps to languages attribute"}

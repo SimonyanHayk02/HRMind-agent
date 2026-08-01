@@ -1,0 +1,22 @@
+{"id":"o01","question":"Who knows Python in Berlin?","check":"skill_location_intersect","note":"skill∩place must compose, not drop city"}
+{"id":"o02","question":"Find React developers in Dubai","check":"skill_location_intersect","note":"skill∩place alternate city"}
+{"id":"o03","question":"how many employees know Kubernetes in London?","check":"skill_location_intersect","note":"count + skill + city"}
+{"id":"o04","question":"where does she live?","check":"pronoun_two_entities_clarify","note":"ambiguous pronoun must clarify"}
+{"id":"o05","question":"what is her email?","check":"pronoun_two_entities_clarify","note":"elliptical attr with 2 entities"}
+{"id":"o06","question":"give me the first persons date of birth","check":"ordinal_birthday_resume","note":"ordinal DOB → resume_search not profile dump"}
+{"id":"o07","question":"her email?","check":"elliptical_attr_pattern","note":"must match elliptical attr regex"}
+{"id":"o08","question":"his manager","check":"elliptical_attr_pattern","note":"must match elliptical attr regex"}
+{"id":"o09","question":"how many employees were hired on Tuesdays?","check":"no_nl2sql","note":"residual analytics clarify, not nl2sql"}
+{"id":"o10","question":"List employees in Munich","check":"location_cohort","note":"expanded place vocab"}
+{"id":"o11","question":"Employees in San Francisco","check":"location_cohort","note":"expanded place vocab alias city"}
+{"id":"o12","question":"Who knows Python?","check":"skill_rag","note":"plain skill still plans resume_search"}
+{"id":"o13","question":"hello","check":"greeting_route","note":"bare social stays greeting"}
+{"id":"o14","question":"thanks","check":"greeting_route","note":"thanks stays greeting"}
+{"id":"o15","question":"how are you","check":"greeting_route","note":"chitchat without session focus stays greeting"}
+{"id":"o16","question":"who speaks German?","check":"languages_cohort","note":"languages resume attribute"}
+{"id":"o17","question":"who has AWS Certified?","check":"certifications_cohort","note":"cert attribute not skill RAG"}
+{"id":"o18","question":"who joined in the last 90 days?","check":"hire_window","note":"90d hire window template"}
+{"id":"o19","question":"what is the average tenure in Engineering?","check":"tenure_template","note":"allowlisted tenure agg"}
+{"id":"o20","question":"who reports to Alice Nguyen?","check":"reports_action","note":"direct reports resolution"}
+{"id":"o21","question":"who on Alice Nguyen's team knows Kubernetes and is in Dubai?","check":"reports_skill_place","note":"manager×skill×place DAG"}
+{"id":"o22","question":"how much PTO does she have?","check":"unsupported_hris","note":"Wave4 keep refusal"}

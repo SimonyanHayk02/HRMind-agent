@@ -9,9 +9,13 @@ from app.ports.embeddings import EmbeddingClient
 
 CHITCHAT_EXAMPLES = [
     "how are you",
+    "how's it going",
     "what's up",
     "tell me a joke",
     "who made you",
+    "who are you",
+    "what can you do",
+    "good to meet you",
 ]
 NEEDS_TOOLS_EXAMPLES = [
     "how many engineers in berlin",
@@ -21,6 +25,11 @@ NEEDS_TOOLS_EXAMPLES = [
     "search resumes for kubernetes",
     "where does ivy chen live",
     "what city is bob based in",
+    "change the status of eva kim to true",
+    "set bob mueller status to false",
+    "when is eva kim's birthday",
+    "say happy birthday to bob mueller",
+    "whose birthday is today",
 ]
 
 _HR_HINTS = re.compile(
@@ -30,7 +39,9 @@ _HR_HINTS = re.compile(
     r"how many|how much|python|kubernetes|aws|berlin|dubai|roster|profile|"
     r"who|about|tell me|find|search|list|show|names?|them|those|their|there|"
     r"of them|of those|among them|name them|say their|"
-    r"where|live|lives|living|located|location|city|country|based|address"
+    r"where|live|lives|living|located|location|city|country|based|address|"
+    r"status|flag|enable|disable|"
+    r"birthday|birthdays|birth|born|dob|age|old"
     r")\b",
     re.I,
 )

@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.domain.places import CITIES, CITY_ALIASES, COUNTRIES, COUNTRY_ALIASES
+
 
 class ColumnSpec(BaseModel):
     name: str
@@ -15,6 +17,10 @@ class ColumnSpec(BaseModel):
     values: list[str] = Field(default_factory=list)
     # Map lowercased alias -> canonical value
     aliases: dict[str, str] = Field(default_factory=dict)
+    # Where the value lives. "resume" fields exist only in resume documents, so
+    # they are retrieved by `resume_search` and must never appear in SQL. This is
+    # the single declaration of that boundary; PlanValidator enforces it.
+    source: Literal["sql", "resume"] = "sql"
 
 
 class SchemaCatalog(BaseModel):
@@ -34,6 +40,10 @@ class SchemaCatalog(BaseModel):
 
     def facetable_columns(self) -> list[ColumnSpec]:
         return [c for c in self.columns if c.facetable]
+
+    def resume_sourced(self) -> frozenset[str]:
+        """Fields that exist only in resume text, so SQL cannot answer them."""
+        return frozenset(c.name for c in self.columns if c.source == "resume")
 
     def resolve_value(self, field: str, raw: str) -> str | None:
         col = self.by_name(field)
@@ -65,6 +75,15 @@ class SchemaCatalog(BaseModel):
         }
 
 
+def resume_sourced_fields() -> frozenset[str]:
+    """The resume-only fields, for callers without a live catalog.
+
+    Declared once here so the plan validator, the prompts and the retrieval
+    attributes cannot drift apart about who owns a field.
+    """
+    return default_employee_catalog().resume_sourced()
+
+
 def default_employee_catalog() -> SchemaCatalog:
     """Seed catalog aligned with HRMind employees table + known seed values."""
     return SchemaCatalog(
@@ -78,35 +97,28 @@ def default_employee_catalog() -> SchemaCatalog:
                 description="Org department",
                 values=["Engineering", "People", "Sales", "Finance", "Product", "Operations"],
             ),
+            # Location is written in the resume and nowhere else. It stays in the
+            # catalog so NLU still recognises "Berlin", but `source="resume"`
+            # routes it to retrieval instead of SQL.
             ColumnSpec(
                 name="country",
                 kind="enum",
                 filterable=True,
                 facetable=True,
-                description="Work country",
-                values=["Germany", "USA", "UK", "UAE", "France"],
-                aliases={
-                    "us": "USA",
-                    "u.s.": "USA",
-                    "u.s.a.": "USA",
-                    "united states": "USA",
-                    "united states of america": "USA",
-                    "america": "USA",
-                    "united kingdom": "UK",
-                    "britain": "UK",
-                    "england": "UK",
-                    "united arab emirates": "UAE",
-                    "dubai country": "UAE",
-                },
+                description="Work country (resume text only; retrieved, never queried)",
+                values=list(COUNTRIES),
+                aliases=dict(COUNTRY_ALIASES),
+                source="resume",
             ),
             ColumnSpec(
                 name="city",
                 kind="enum",
                 filterable=True,
                 facetable=True,
-                description="Work city",
-                values=["Berlin", "New York", "London", "Dubai", "Paris"],
-                aliases={"ny": "New York", "new york city": "New York", "nyc": "New York"},
+                description="Work city (resume text only; retrieved, never queried)",
+                values=list(CITIES),
+                aliases=dict(CITY_ALIASES),
+                source="resume",
             ),
             ColumnSpec(
                 name="position",
@@ -179,6 +191,18 @@ def default_employee_catalog() -> SchemaCatalog:
                     "fired": "terminated",
                     "left": "terminated",
                 },
+            ),
+            ColumnSpec(
+                name="status",
+                kind="enum",
+                filterable=True,
+                facetable=False,
+                description=(
+                    "Agent boolean flag on employees (true/false). "
+                    "Not employment_status and not resume ingest status."
+                ),
+                values=["true", "false"],
+                aliases={"yes": "true", "no": "false", "1": "true", "0": "false"},
             ),
             ColumnSpec(
                 name="hire_date",

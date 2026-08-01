@@ -119,17 +119,31 @@ def build_planner_packet(
     max_summary_chars: int = DEFAULT_MAX_SUMMARY_CHARS,
     max_ids: int = DEFAULT_MAX_IDS_IN_PACKET,
     max_entities: int = DEFAULT_MAX_ENTITY_PACKET,
+    context_need: str | None = None,
 ) -> dict[str, Any]:
+    from app.application.memory.context_view import (
+        ContextNeed,
+        classify_context_need,
+        redact_planner_packet,
+    )
+
     recent: list[dict[str, str]] = []
     entities: list[dict] = []
     constraints: list[dict] = []
     last_ids: list[str] = []
+    last_listed: list[dict] = []
     summary = ""
     last_focus: dict | None = None
     active_referent: dict | None = None
     named_sets: dict[str, list[str]] = {}
     person_bindings: dict[str, str] = {}
     tool_facts: list[dict] = []
+
+    need = (
+        ContextNeed(context_need)
+        if context_need
+        else classify_context_need(question, memory)
+    )
 
     if memory:
         for msg in memory.messages[-max_context:]:
@@ -148,6 +162,14 @@ def build_planner_packet(
             or memory.last_employee_ids
         )
         last_ids = raw_ids[:max_ids]
+        last_listed = [
+            {
+                "employee_id": str(e.employee_id),
+                "display_name": e.display_name,
+                "index": i + 1,
+            }
+            for i, e in enumerate(memory.last_listed[:max_ids])
+        ]
         summary = clip_text(memory.summary or "", max_summary_chars)
         if memory.last_focus:
             last_focus = memory.last_focus.model_dump(mode="json")
@@ -176,6 +198,7 @@ def build_planner_packet(
         "last_employee_ids_truncated": bool(
             memory and len(memory.last_employee_ids) > max_ids
         ),
+        "last_listed": last_listed,
         "active_referent": active_referent,
         "last_focus": last_focus,
         "constraints": constraints,
@@ -185,5 +208,6 @@ def build_planner_packet(
         "tool_facts": tool_facts,
         "summary": summary,
     }
+    packet = redact_planner_packet(packet, need, memory=memory)
     packet["approx_tokens"] = estimate_tokens(str(packet))
     return packet

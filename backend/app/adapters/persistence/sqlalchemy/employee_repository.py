@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.persistence.sqlalchemy.mappers import employee_to_domain
@@ -15,17 +15,22 @@ class SqlAlchemyEmployeeRepository:
         self._session = session
 
     async def get_by_id(self, employee_id: uuid.UUID) -> Employee | None:
-        row = await self._session.get(EmployeeModel, employee_id)
+        result = await self._session.execute(
+            select(EmployeeModel).where(EmployeeModel.id == employee_id)
+        )
+        row = result.scalar_one_or_none()
         return employee_to_domain(row) if row else None
 
     async def get_by_email(self, email: str) -> Employee | None:
-        result = await self._session.execute(select(EmployeeModel).where(EmployeeModel.email == email))
+        result = await self._session.execute(
+            select(EmployeeModel).where(EmployeeModel.email == email)
+        )
         row = result.scalar_one_or_none()
         return employee_to_domain(row) if row else None
 
     async def search_by_name(self, query: str, *, limit: int = 10) -> list[Employee]:
         q = f"%{query.lower()}%"
-        stmt: Select[tuple[EmployeeModel]] = (
+        stmt = (
             select(EmployeeModel)
             .where(
                 or_(
@@ -58,6 +63,20 @@ class SqlAlchemyEmployeeRepository:
             depth += 1
         return chain
 
+    async def list_by_manager(self, manager_id: uuid.UUID) -> list[Employee]:
+        result = await self._session.execute(
+            select(EmployeeModel).where(EmployeeModel.manager_id == manager_id)
+        )
+        return [employee_to_domain(r) for r in result.scalars().all()]
+
     async def list_all(self, *, limit: int = 500) -> list[Employee]:
         result = await self._session.execute(select(EmployeeModel).limit(limit))
         return [employee_to_domain(r) for r in result.scalars().all()]
+
+    async def update_status(self, employee_id: uuid.UUID, status: bool) -> Employee | None:
+        row = await self._session.get(EmployeeModel, employee_id)
+        if row is None:
+            return None
+        row.status = bool(status)
+        await self._session.flush()
+        return await self.get_by_id(employee_id)

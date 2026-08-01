@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.domain.enums import Role
 
+# Columns of the employees table. City and country are absent on purpose: they
+# live in resume text, so generated SQL cannot select them.
 BASE_EMPLOYEE_COLUMNS = {
     "id",
     "tenant_id",
@@ -11,11 +13,10 @@ BASE_EMPLOYEE_COLUMNS = {
     "department",
     "position",
     "hire_date",
-    "country",
-    "city",
     "manager_id",
     "education",
     "employment_status",
+    "status",
     "created_at",
     "updated_at",
 }

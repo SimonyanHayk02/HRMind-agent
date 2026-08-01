@@ -5,6 +5,7 @@ from uuid import UUID
 
 from app.application.execution.graph_state import GraphState
 from app.application.planning.plan_schema import ExecutionPlan
+from app.domain.places import CITY_ALT, COUNTRY_ALT, canon_city, canon_country
 from app.domain.session import ConstraintRef, EntityRef, LastFocus
 from app.domain.tools.base import ToolResult
 
@@ -21,11 +22,14 @@ _SKILLS = (
     "AWS|Docker|Salesforce|Recruiting|Accounting|Product Strategy"
 )
 _SKILL_RE = re.compile(rf"\b({_SKILLS})\b", re.I)
-_CITY_RE = re.compile(r"\b(Berlin|Dubai|London|Paris|New York)\b", re.I)
+_CITY_RE = re.compile(rf"\b({CITY_ALT})\b", re.IGNORECASE)
+_COUNTRY_RE = re.compile(rf"\b({COUNTRY_ALT})\b", re.IGNORECASE)
 
-# Constraints that can be applied as SQL filters (not skills — those need RAG).
+# Constraints that can be applied as SQL filters. City and country are absent:
+# they live in resume text, so a remembered place becomes a retrieval scope
+# instead (see place_from_constraint_memory), and skills need RAG too.
 _SQL_CONSTRAINT_FIELDS = frozenset(
-    {"department", "city", "country", "position", "education", "employment_status"}
+    {"department", "position", "education", "employment_status"}
 )
 _FACET_DIMS = ("country", "city", "department", "position", "education", "employment_status")
 
@@ -39,7 +43,19 @@ def infer_constraints_from_question(question: str) -> list[ConstraintRef]:
             break
     city = _CITY_RE.search(question)
     if city:
-        out.append(ConstraintRef(field="city", op="eq", value=city.group(1)))
+        out.append(
+            ConstraintRef(field="city", op="eq", value=canon_city(city.group(1)) or city.group(1))
+        )
+    else:
+        country = _COUNTRY_RE.search(question)
+        if country:
+            out.append(
+                ConstraintRef(
+                    field="country",
+                    op="eq",
+                    value=canon_country(country.group(1)) or country.group(1),
+                )
+            )
     skill = _SKILL_RE.search(question)
     if skill:
         out.append(ConstraintRef(field="skill", op="contains", value=skill.group(1)))
@@ -57,6 +73,157 @@ def filters_from_constraint_memory(constraints: list[ConstraintRef] | None) -> d
     return filters
 
 
+def place_from_constraint_memory(
+    constraints: list[ConstraintRef] | None,
+) -> tuple[str | None, str | None]:
+    """The remembered place, for the planner to turn into a retrieval node.
+
+    Kept separate from `filters_from_constraint_memory` so a city remembered from
+    an earlier turn can never quietly become a SQL filter.
+    """
+    city: str | None = None
+    country: str | None = None
+    for c in constraints or []:
+        if c.op != "eq" or not c.value:
+            continue
+        if c.field == "city":
+            city = canon_city(str(c.value)) or str(c.value)
+        elif c.field == "country":
+            country = canon_country(str(c.value)) or str(c.value)
+    return city, country
+
+
+def _row_as_entity(row: dict) -> EntityRef | None:
+    if not row.get("id"):
+        return None
+    # Facet rows have a dimension value but no person name — never list-anchor them.
+    has_name = bool(
+        row.get("first_name")
+        or row.get("last_name")
+        or row.get("full_name")
+        or row.get("employee_name")
+    )
+    if not has_name:
+        return None
+    try:
+        eid = UUID(str(row["id"]))
+    except Exception:
+        return None
+    name = str(row.get("full_name") or row.get("employee_name") or "").strip()
+    if not name:
+        first = str(row.get("first_name") or "").strip()
+        last = str(row.get("last_name") or "").strip()
+        name = f"{first} {last}".strip() or str(eid)
+    return EntityRef(employee_id=eid, display_name=name, confidence=0.9)
+
+
+def _entities_from_resume_payload(data: dict) -> list[EntityRef]:
+    """Ordered people from resume_search hits/facts when SQL did not list names."""
+    out: list[EntityRef] = []
+    seen: set[UUID] = set()
+
+    facts = data.get("facts")
+    if isinstance(facts, list):
+        for fact in facts:
+            if not isinstance(fact, dict) or not fact.get("employee_id"):
+                continue
+            try:
+                eid = UUID(str(fact["employee_id"]))
+            except Exception:
+                continue
+            if eid in seen:
+                continue
+            name = str(fact.get("name") or fact.get("employee_name") or "").strip()
+            if not name:
+                continue
+            seen.add(eid)
+            out.append(EntityRef(employee_id=eid, display_name=name, confidence=0.85))
+        if out:
+            return out
+
+    hits = data.get("hits")
+    if isinstance(hits, list):
+        for hit in hits:
+            if not isinstance(hit, dict) or not hit.get("employee_id"):
+                continue
+            try:
+                eid = UUID(str(hit["employee_id"]))
+            except Exception:
+                continue
+            if eid in seen:
+                continue
+            name = str(
+                hit.get("employee_name")
+                or (hit.get("metadata") or {}).get("employee_name")
+                or ""
+            ).strip()
+            if not name:
+                continue
+            seen.add(eid)
+            out.append(EntityRef(employee_id=eid, display_name=name, confidence=0.8))
+    return out
+
+
+def extract_listed_employees(state: GraphState, plan: ExecutionPlan) -> list[EntityRef]:
+    """Ordered employees from the answer-driving name list, if any.
+
+    Used for ordinals ("the first person"). Facet value lists and count-only
+    payloads are ignored so they cannot poison display order.
+    """
+    # Prefer the active cohort / last sql or employee node that returned name rows.
+    prefer_ids: list[str] = []
+    if plan.active_cohort_node:
+        prefer_ids.append(plan.active_cohort_node)
+    for node in plan.nodes:
+        if node.name in {"sql", "employee"} and node.id not in prefer_ids:
+            prefer_ids.append(node.id)
+
+    def _from_data(data: object) -> list[EntityRef]:
+        if not isinstance(data, dict):
+            return []
+        # Count-only — no names shown.
+        if data.get("count") is not None and not data.get("rows") and not data.get("employees"):
+            return []
+        out: list[EntityRef] = []
+        seen: set[UUID] = set()
+        for key in ("rows", "employees"):
+            rows = data.get(key)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ent = _row_as_entity(row)
+                if ent is None or ent.employee_id in seen:
+                    continue
+                seen.add(ent.employee_id)
+                out.append(ent)
+        if out:
+            return out
+        # Attribute / skill RAG answers that never passed through SQL.
+        return _entities_from_resume_payload(data)
+
+    for nid in prefer_ids:
+        result = state.node_results.get(nid)
+        if result is None:
+            continue
+        data = result.data if isinstance(result, ToolResult) else result
+        listed = _from_data(data)
+        if listed:
+            return listed
+
+    # Fallback: first payload in node order that looks like a name list.
+    for node in plan.nodes:
+        result = state.node_results.get(node.id)
+        if result is None:
+            continue
+        data = result.data if isinstance(result, ToolResult) else result
+        listed = _from_data(data)
+        if listed:
+            return listed
+    return []
+
+
 def extract_entities_from_state(state: GraphState) -> list[EntityRef]:
     entities: list[EntityRef] = []
     seen: set[UUID] = set()
@@ -69,19 +236,13 @@ def extract_entities_from_state(state: GraphState) -> list[EntityRef]:
         rows = data.get("rows")
         if isinstance(rows, list):
             for row in rows:
-                if not isinstance(row, dict) or not row.get("id"):
+                if not isinstance(row, dict):
                     continue
-                try:
-                    eid = UUID(str(row["id"]))
-                except Exception:
+                ent = _row_as_entity(row)
+                if ent is None or ent.employee_id in seen:
                     continue
-                if eid in seen:
-                    continue
-                seen.add(eid)
-                first = str(row.get("first_name") or "").strip()
-                last = str(row.get("last_name") or "").strip()
-                name = f"{first} {last}".strip() or str(eid)
-                entities.append(EntityRef(employee_id=eid, display_name=name, confidence=0.9))
+                seen.add(ent.employee_id)
+                entities.append(ent)
 
         hits = data.get("hits")
         if isinstance(hits, list):
@@ -109,21 +270,11 @@ def extract_entities_from_state(state: GraphState) -> list[EntityRef]:
         if isinstance(data.get("employees"), list):
             people.extend(x for x in data["employees"] if isinstance(x, dict))
         for person in people:
-            if not person.get("id"):
+            ent = _row_as_entity(person)
+            if ent is None or ent.employee_id in seen:
                 continue
-            try:
-                eid = UUID(str(person["id"]))
-            except Exception:
-                continue
-            if eid in seen:
-                continue
-            seen.add(eid)
-            name = str(person.get("full_name") or "").strip()
-            if not name:
-                first = str(person.get("first_name") or "").strip()
-                last = str(person.get("last_name") or "").strip()
-                name = f"{first} {last}".strip() or str(eid)
-            entities.append(EntityRef(employee_id=eid, display_name=name, confidence=0.9))
+            seen.add(ent.employee_id)
+            entities.append(ent)
 
     return entities
 
@@ -135,6 +286,17 @@ def extract_last_focus(
     employee_ids: list[str] | None = None,
 ) -> LastFocus | None:
     """Derive discourse focus from the plan/results for short follow-ups."""
+    # Resume-sourced facets (city/country) are aggregated by retrieval.
+    for node in plan.nodes:
+        if node.name != "resume_search":
+            continue
+        params = node.params or {}
+        dim = params.get("facet")
+        if not dim or dim not in _FACET_DIMS:
+            continue
+        values = _facet_values_from_state(state, str(dim), prefer_node=node.id)
+        return LastFocus(kind="facet", dimension=str(dim), values=values)
+
     # Prefer explicit distinct / count_distinct facet plans
     for node in plan.nodes:
         if node.name != "sql":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PlanNode(BaseModel):
@@ -12,6 +12,29 @@ class PlanNode(BaseModel):
     input_bindings: dict[str, str] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_llm_shape(cls, data: Any) -> Any:
+        """Salvage common LLM mistakes before field validation."""
+        if not isinstance(data, dict):
+            return data
+        bindings = data.get("input_bindings")
+        params = data.get("params")
+        if not isinstance(bindings, dict):
+            bindings = {}
+        if not isinstance(params, dict):
+            params = {} if params is None else {}
+        # LLM sometimes nests tool args under input_bindings.params (a dict).
+        nested = bindings.get("params")
+        if isinstance(nested, dict):
+            params = {**nested, **params}
+            bindings = {k: v for k, v in bindings.items() if k != "params"}
+        data["input_bindings"] = {
+            str(k): v for k, v in bindings.items() if isinstance(v, str)
+        }
+        data["params"] = params
+        return data
 
     @field_validator("id", mode="before")
     @classmethod
@@ -49,6 +72,8 @@ class ExecutionPlan(BaseModel):
     clarify_question: str | None = None
     # Node id whose output defines the active "them" cohort for the next turn.
     active_cohort_node: str | None = None
+    # Optional planner hint for the runtime refusal resolver (not client-facing).
+    refusal_code: str | None = None
 
     @field_validator("version", mode="before")
     @classmethod

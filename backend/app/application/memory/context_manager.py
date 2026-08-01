@@ -18,6 +18,7 @@ from app.application.memory.context_budget import (
 from app.application.memory.context_updates import (
     extract_entities_from_state,
     extract_last_focus,
+    extract_listed_employees,
     infer_constraints_from_question,
 )
 from app.application.memory.memory_service import MemoryService
@@ -47,8 +48,11 @@ _TOPIC_SHIFT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Soft social openers are answered as greetings but must NOT wipe the active
+# cohort — users often say "hey" / "thanks" mid-search before "names please".
 _GREETING_RE = re.compile(
-    r"^\s*(hi|hello|hey|good (?:morning|afternoon|evening)|thanks|thank you)\b",
+    r"^\s*(hi|hello|hey|good (?:morning|afternoon|evening)|thanks|thank you|"
+    r"how are you(?: doing)?|how's it going)\b",
     re.IGNORECASE,
 )
 _PRONOUN_PERSON_RE = re.compile(r"\b(he|she|him|her|his|hers)\b", re.IGNORECASE)
@@ -139,8 +143,9 @@ class ContextManager:
     def resolve_references(self, question: str, session: SessionMemory) -> ResolvedRefs:
         refers = refers_to_prior_set(question)
         topic_shift = bool(_TOPIC_SHIFT_RE.search(question))
-        greeting = bool(_GREETING_RE.search(question.strip()))
-        clear = greeting or topic_shift
+        # Only explicit topic-shift phrases clear memory. Soft greetings keep the
+        # prior set so "hey → names please" still lists the last cohort.
+        clear = topic_shift
 
         ids = list(
             (session.active_referent.ids if session.active_referent else None)
@@ -205,6 +210,7 @@ class ContextManager:
         tools: list[dict],
         schema_catalog: dict,
         query_state: QueryState | None = None,
+        context_need: str | None = None,
     ) -> dict[str, Any]:
         return build_planner_packet(
             question=question,
@@ -216,6 +222,7 @@ class ContextManager:
             max_context=self._max_context,
             max_summary_chars=self._max_summary_chars,
             max_ids=self._max_ids,
+            context_need=context_need,
         )
 
     def build_for_responder(
@@ -232,6 +239,17 @@ class ContextManager:
             session = await self._memory.merge_constraints(session, constraints)
         return session
 
+    async def put_tool_fact(self, session: SessionMemory, fact: ToolFact) -> SessionMemory:
+        return await self._memory.put_tool_fact(session, fact)
+
+    async def clear_tool_fact(self, session: SessionMemory, key: str) -> SessionMemory:
+        cache = dict(session.tool_fact_cache)
+        if key not in cache:
+            return session
+        cache.pop(key, None)
+        session.tool_fact_cache = cache
+        return await self._memory.save(session)
+
     async def commit(
         self,
         session: SessionMemory,
@@ -240,29 +258,52 @@ class ContextManager:
         plan: ExecutionPlan,
         state: GraphState,
         set_label: str | None = None,
+        refusal_code: str | None = None,
     ) -> SessionMemory:
+        from app.application.response.refusal import PRESERVE_COHORT_CODES
+
+        code = (refusal_code or plan.refusal_code or "").strip().lower()
+        preserve = code in {c.value for c in PRESERVE_COHORT_CODES}
+
         ids = extract_cohort_ids(state, plan)
         saved_ids = (
             ids if ids and should_update_last_employee_ids(plan, question, ids) else []
         )
 
-        if saved_ids:
-            session = await self._memory.set_last_employee_ids(session, saved_ids)
-            label = set_label or _infer_set_label(question)
-            session = await self._memory.set_active_referent(
-                session,
-                ActiveReferent(
-                    ids=saved_ids,
-                    label=label,
-                    source_turn=len(session.messages),
-                    confidence=0.9,
-                ),
-            )
-            label_key = _slug_label(label)
-            if label_key:
-                session = await self._memory.set_named_set(session, label_key, saved_ids)
-        elif plan.nodes and all(n.name == "greeting" for n in plan.nodes):
-            session = await self.clear_referents(session, reason="greeting_plan")
+        # OOS / unauthorized / ambiguous / tool_error / missing_data — keep cohort.
+        # empty_cohort and ok still update or clear from plan shape.
+        if not preserve:
+            if saved_ids:
+                session = await self._memory.set_last_employee_ids(session, saved_ids)
+                label = set_label or _infer_set_label(question)
+                session = await self._memory.set_active_referent(
+                    session,
+                    ActiveReferent(
+                        ids=saved_ids,
+                        label=label,
+                        source_turn=len(session.messages),
+                        confidence=0.9,
+                    ),
+                )
+                label_key = _slug_label(label)
+                if label_key:
+                    session = await self._memory.set_named_set(
+                        session, label_key, saved_ids
+                    )
+            elif (
+                plan.active_cohort_node
+                and plan.active_cohort_node in state.node_results
+                and not ids
+            ):
+                # Empty intersect / empty location match — "them" is now nobody, not
+                # the pre-intersect location dump and not the previous person.
+                session = await self._memory.set_last_employee_ids(session, [])
+                session = await self._memory.set_active_referent(session, None)
+            # Soft greeting plans intentionally do not clear the cohort.
+
+        listed = extract_listed_employees(state, plan)
+        if listed:
+            session = await self._memory.set_last_listed(session, listed)
 
         entities = extract_entities_from_state(state)
         if entities:
@@ -296,6 +337,32 @@ class ContextManager:
                         "hers": eid,
                     },
                 )
+
+        # A bound person-attribute turn (ordinal / pronoun → single id) refocuses
+        # he/she for the next follow-up even when the list had multiple people.
+        bound_id = _bound_person_id_from_plan(plan)
+        if bound_id:
+            session = await self._memory.set_person_bindings(
+                session,
+                {
+                    "he": bound_id,
+                    "she": bound_id,
+                    "him": bound_id,
+                    "her": bound_id,
+                    "his": bound_id,
+                    "hers": bound_id,
+                },
+            )
+            label = _entity_label(session, bound_id)
+            session = await self._memory.set_active_referent(
+                session,
+                ActiveReferent(
+                    ids=[bound_id],
+                    label=label,
+                    source_turn=len(session.messages),
+                    confidence=0.95,
+                ),
+            )
 
         constraints = infer_constraints_from_question(question)
         if constraints:
@@ -344,6 +411,38 @@ class ContextManager:
                 keep[key] = fact
         session.tool_fact_cache = keep
         return session
+
+
+def _entity_label(session: SessionMemory, employee_id: str) -> str | None:
+    for ent in list(session.last_listed or []) + list(session.entity_memory or []):
+        if str(ent.employee_id) == employee_id and ent.display_name:
+            return ent.display_name
+    return None
+
+
+def _bound_person_id_from_plan(plan: ExecutionPlan) -> str | None:
+    """Single employee id deliberately bound on a person-attribute tool node."""
+    for node in plan.nodes:
+        params = node.params or {}
+        if node.name == "resume_search":
+            purpose = str(params.get("purpose") or "")
+            if purpose in {"birthday_person", "location_person"}:
+                ids = [str(x) for x in (params.get("employee_ids") or []) if x]
+                if len(ids) == 1:
+                    return ids[0]
+        if node.name == "employee" and params.get("action") in {
+            "by_id",
+            "profile",
+            "manager",
+        }:
+            eid = params.get("employee_id")
+            if eid:
+                return str(eid)
+        if node.name == "employee" and params.get("action") == "set_status":
+            eid = params.get("employee_id") or params.get("status_employee_id")
+            if eid:
+                return str(eid)
+    return None
 
 
 def _infer_set_label(question: str) -> str | None:

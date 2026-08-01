@@ -77,6 +77,8 @@ def wire_application_stack(container) -> None:
             top_k=settings.top_k,
             rerank_top_k=settings.rerank_top_k,
             cache_ttl=settings.retrieval_cache_ttl,
+            rrf_k=settings.retrieval_rrf_k,
+            name_similarity=settings.retrieval_name_similarity,
         )
     )
 
@@ -104,6 +106,7 @@ def wire_application_stack(container) -> None:
         session_factory=container.session_factory,
         cache=container.cache,
         ttl_seconds=3600,
+        vector_store=vector_store,
     )
     container.extras["catalog_service"] = catalog_service
 

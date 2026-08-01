@@ -1,0 +1,8 @@
+{"id": "exact_city", "template": "where does {name} live?", "subject": "located", "expect": "place", "why": "baseline person location from resume text"}
+{"id": "typo_place", "template": "where does {name_typo} work?", "subject": "located", "expect": "place", "why": "typo tolerance still applies to location questions"}
+{"id": "namesake_place", "template": "where does {name} live?", "subject": "duplicate_located", "expect": "disambiguation", "why": "namesakes list every city rather than picking one"}
+{"id": "descriptive_place", "template": "where does the {position} in {city} work?", "subject": "located", "reference": "descriptive", "expect": "place_or_disambiguation", "why": "descriptive reference resolves identity then place"}
+{"id": "missing_location", "template": "where does {name} live?", "subject": "no_location", "expect": "refusal", "why": "unparseable location must be refused, not invented"}
+{"id": "unknown_person_place", "template": "where does Zzz Nobody live?", "subject": "none", "expect": "refusal", "why": "unmatched name must not invent a city"}
+{"id": "city_facet", "template": "how many different cities?", "subject": "facet", "facet": "city", "expect": "facet", "why": "aggregate from the corpus, no employee cohort published"}
+{"id": "country_facet", "template": "which countries?", "subject": "facet", "facet": "country", "expect": "facet", "why": "distinct countries from Location chunks"}

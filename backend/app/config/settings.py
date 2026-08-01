@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     router_threshold: float = 0.75
     top_k: int = 30
     rerank_top_k: int = 5
+    # Hybrid retrieval: RRF constant and the trigram floor for fuzzy name matching.
+    retrieval_rrf_k: int = 60
+    retrieval_name_similarity: float = 0.35
     max_history: int = 20
     max_context: int = 8
     summary_trigger: int = 12

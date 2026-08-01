@@ -12,16 +12,17 @@ def extract_cohort_ids(state: GraphState, plan: ExecutionPlan | None = None) -> 
     """Pick the active employee cohort from the plan DAG (not a union of all nodes).
 
     Preference order:
-    1. plan.active_cohort_node result
+    1. plan.active_cohort_node result (including empty — empty intersect must win)
     2. last intersect_ids operator output
     3. last extract_employee_ids operator output
     4. last SQL rows with id (non-count)
     5. last resume_search employee_ids
     """
     if plan and plan.active_cohort_node:
-        preferred = _from_value(state.node_results.get(plan.active_cohort_node))
-        if preferred:
-            return _dedupe(preferred)
+        # If the preferred node ran, honor its output even when empty. Falling
+        # through would pick pre-intersect location ids and silently widen "them".
+        if plan.active_cohort_node in state.node_results:
+            return _dedupe(_from_value(state.node_results.get(plan.active_cohort_node)))
 
     # Walk nodes in plan order; keep last matching producer
     last: list[str] = []

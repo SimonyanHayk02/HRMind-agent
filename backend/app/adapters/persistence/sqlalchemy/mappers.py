@@ -17,11 +17,10 @@ def employee_to_domain(row: EmployeeModel) -> Employee:
         position=row.position,
         salary=row.salary,
         hire_date=row.hire_date,
-        country=row.country,
-        city=row.city,
         manager_id=row.manager_id,
         education=row.education,
         employment_status=EmploymentStatus(row.employment_status),
+        status=bool(row.status),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

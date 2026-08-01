@@ -18,3 +18,14 @@
 {"id":"r4","question":"Who mentions Machine Learning on their resume?","role":"recruiter","expected_route":"needs_tools"}
 {"id":"s6","question":"Department roster for Product","role":"manager","expected_route":"needs_tools"}
 {"id":"g5","question":"thank you","role":"manager","expected_route":"greeting"}
+{"id":"g6","question":"how are you","role":"recruiter","expected_route":"greeting"}
+{"id":"g7","question":"who are you","role":"employee","expected_route":"greeting"}
+{"id":"g8","question":"what can you do","role":"manager","expected_route":"greeting"}
+{"id":"o1","question":"Who knows Python in Berlin?","role":"recruiter","expected_route":"needs_tools","plan_hint":"skill_location"}
+{"id":"o2","question":"Find React developers in Dubai","role":"recruiter","expected_route":"needs_tools","plan_hint":"skill_location"}
+{"id":"o3","question":"List employees in Munich","role":"recruiter","expected_route":"needs_tools","plan_hint":"location"}
+{"id":"o4","question":"Employees in San Francisco","role":"manager","expected_route":"needs_tools","plan_hint":"location"}
+{"id":"o5","question":"how many of them know python?","role":"recruiter","expected_route":"needs_tools","plan_hint":"anaphora_skill"}
+{"id":"o6","question":"her email?","role":"recruiter","expected_route":"needs_tools","plan_hint":"elliptical"}
+{"id":"o7","question":"give me the first persons date of birth","role":"recruiter","expected_route":"needs_tools","plan_hint":"ordinal_birthday"}
+{"id":"o8","question":"where does she live?","role":"recruiter","expected_route":"needs_tools","plan_hint":"pronoun_location"}

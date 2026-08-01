@@ -25,5 +25,25 @@ services:
       timeout: 3s
       retries: 10
 
+  # Browser DB UI: http://localhost:8080
+  # System: PostgreSQL | Server: postgres | User/Pass/DB: hrmind
+  adminer:
+    image: adminer:4
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+  # Browser Redis UI: http://localhost:8081
+  # Host: redis | Port: 6379 (no password)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+
 volumes:
   pgdata:

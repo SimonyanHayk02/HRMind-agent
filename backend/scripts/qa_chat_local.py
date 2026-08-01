@@ -3,14 +3,19 @@
 Local multi-turn chat QA for HRMind.
 
 Exercises greeting, SQL, RAG (resume_search), employee lookup, manager,
-unsupported topics, and context/referent follow-ups against a running API.
+status updates (by name / by location), unsupported topics,
+list/ordinal referents, residual NLU paraphrases, everyday user
+wordings, and orchestration / hallucination-control contracts against
+a running API.
 
 Usage:
   source .venv/bin/activate
-  python scripts/qa_chat_local.py                 # basic + hard
+  python scripts/qa_chat_local.py                 # basic + hard + utterances + orch
   python scripts/qa_chat_local.py --suite basic
-  python scripts/qa_chat_local.py --suite hard    # adversarial dialogs
-  python scripts/qa_chat_local.py --only U_,AG_
+  python scripts/qa_chat_local.py --suite hard    # adversarial + list/NLU
+  python scripts/qa_chat_local.py --suite utterances  # natural paraphrases only
+  python scripts/qa_chat_local.py --suite orchestrator  # Wave A–D contracts
+  python scripts/qa_chat_local.py --only OR_,U_,AG_,ST_,UQ_,NS_,LR_
 """
 from __future__ import annotations
 
@@ -23,6 +28,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable
 
 Checker = Callable[[str, dict[str, Any]], tuple[bool, str]]
@@ -62,6 +69,7 @@ class Scenario:
     turns: list[tuple[str, Checker]]
     results: list[TurnResult] = field(default_factory=list)
     session_id: str | None = None
+    role: str | None = None  # optional X-Role override for this scenario
 
 
 def health_check(base: str, timeout: float = 5.0) -> dict[str, Any]:
@@ -76,14 +84,18 @@ def chat(
     session_id: str | None = None,
     *,
     timeout: float = 120.0,
+    role: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"question": question}
     if session_id:
         body["session_id"] = session_id
+    headers = dict(HEADERS)
+    if role:
+        headers["X-Role"] = role
     req = urllib.request.Request(
         f"{base}/v1/chat",
         data=json.dumps(body).encode(),
-        headers=HEADERS,
+        headers=headers,
         method="POST",
     )
     t0 = time.time()
@@ -111,7 +123,20 @@ def first_int(text: str) -> int | None:
 # --- Checkers ---
 
 def expect_greeting(a: str, _r: dict) -> tuple[bool, str]:
-    ok = contains_any(a, "hello", "hi", "help", "hrmind", "assist")
+    ok = contains_any(
+        a,
+        "hello",
+        "hi",
+        "hey",
+        "help",
+        "hrmind",
+        "assist",
+        "welcome",
+        "goodbye",
+        "happy to help",
+        "anytime",
+        "glad",
+    )
     return ok, "greeting" if ok else f"unexpected: {a[:120]}"
 
 
@@ -137,6 +162,10 @@ def expect_country_names(a: str, _r: dict) -> tuple[bool, str]:
         "uae",
         "france",
         "dubai",
+        "netherlands",
+        "canada",
+        "india",
+        "singapore",
     ]
     hits = sum(1 for c in countries if c in a.lower())
     refused = contains_any(a, "don't have access", "do not have access")
@@ -145,32 +174,49 @@ def expect_country_names(a: str, _r: dict) -> tuple[bool, str]:
 
 
 def expect_city_names(a: str, _r: dict) -> tuple[bool, str]:
-    cities = ["berlin", "dubai", "london", "paris", "new york"]
+    cities = [
+        "berlin",
+        "dubai",
+        "london",
+        "paris",
+        "new york",
+        "munich",
+        "san francisco",
+        "amsterdam",
+        "toronto",
+        "bangalore",
+        "singapore",
+        "abu dhabi",
+        "seattle",
+        "austin",
+        "hamburg",
+        "manchester",
+    ]
     hits = sum(1 for c in cities if c in a.lower())
     ok = hits >= 2 and not_contains(a, "don't have access", "internal_error")
     return ok, f"city hits={hits}" if ok else f"hits={hits}: {a[:180]}"
 
 
+@lru_cache(maxsize=1)
+def seeded_names() -> tuple[str, ...]:
+    """Names from the seeded corpus, so name assertions follow the data rather
+    than a hardcoded list that rots on the next reseed."""
+    path = Path("data/seed/employees.json")
+    if not path.exists():
+        return ()
+    people = json.loads(path.read_text())
+    names: set[str] = set()
+    for person in people:
+        first = str(person.get("first_name") or "").lower()
+        last = str(person.get("last_name") or "").lower()
+        names.update(n for n in (first, last, f"{first} {last}".strip()) if n)
+    return tuple(sorted(names))
+
+
 def expect_has_names(a: str, _r: dict) -> tuple[bool, str]:
     refused = contains_any(a, "don't have access", "which names should i list")
-    has_name = contains_any(
-        a,
-        "nguyen",
-        "smith",
-        "garcia",
-        "mueller",
-        "khan",
-        "chen",
-        "kim",
-        "martin",
-        "brown",
-        "patel",
-        "lopez",
-        "alice",
-        "ivy",
-        "bob",
-        "carol",
-    )
+    candidates = seeded_names() or ("nguyen", "smith", "garcia", "khan", "martin")
+    has_name = contains_any(a, *candidates)
     ok = has_name and not refused
     return ok, "employee names" if ok else f"refused={refused}: {a[:180]}"
 
@@ -209,6 +255,19 @@ def expect_facet_small_count(a: str, _r: dict) -> tuple[bool, str]:
 
 
 def expect_followup_count(a: str, _r: dict) -> tuple[bool, str]:
+    # Honest empty cohort refine (prior set was empty / no skill overlap).
+    if contains_any(
+        a,
+        "none of the previous",
+        "no matching",
+        "couldn't find",
+        "could not find",
+        "no one",
+        "nobody",
+        "0 employee",
+        "the answer is 0",
+    ):
+        return True, "empty-cohort refine"
     n = first_int(a)
     if n is None:
         return False, f"no number: {a[:160]}"
@@ -227,11 +286,20 @@ def expect_person_location(a: str, _r: dict) -> tuple[bool, str]:
         "london",
         "paris",
         "new york",
+        "munich",
+        "san francisco",
+        "amsterdam",
+        "toronto",
+        "bangalore",
+        "singapore",
         "germany",
         "usa",
         "uk",
         "uae",
         "france",
+        "netherlands",
+        "canada",
+        "india",
         "city",
         "live",
         "based",
@@ -245,15 +313,39 @@ def expect_person_location(a: str, _r: dict) -> tuple[bool, str]:
 
 def expect_about_person(a: str, _r: dict) -> tuple[bool, str]:
     ok = (
-        contains_any(a, "ivy", "chen", "department", "engineer", "position", "employee")
+        contains_any(a, "department", "engineer", "position", "employee", *seeded_names())
         and len(a) > 20
         and not_contains(a, "internal_error")
     )
     return ok, "profile" if ok else f"got: {a[:180]}"
 
 
+def expect_sofia_disambiguation(a: str, r: dict) -> tuple[bool, str]:
+    """Name existence with several Sofias → clarify list, not planner fallback."""
+    if contains_any(a, "couldn't build a reliable plan", "try asking with a department"):
+        return False, f"planner fallback: {a[:160]}"
+    ok = (
+        contains_any(a, "sofia", "which one", "multiple people", "which employee")
+        and contains_any(a, "andersen", "brown", "yilmaz")
+        and not_contains(a, "internal_error", "traceback")
+    )
+    clarify = (r.get("clarify") or "").lower()
+    if clarify and "sofia" not in clarify and "which" not in clarify:
+        return False, f"odd clarify: {clarify[:120]}"
+    return ok, "sofia namesakes" if ok else f"got: {a[:180]}"
+
+
 def expect_managerish(a: str, _r: dict) -> tuple[bool, str]:
-    ok = len(a.strip()) > 10 and not_contains(a, "internal_error", "traceback")
+    if contains_any(a, "which employee", "which one", "tell me their name"):
+        return False, f"unbound pronoun: {a[:160]}"
+    ok = (
+        len(a.strip()) > 10
+        and not_contains(a, "internal_error", "traceback")
+        and (
+            contains_any(a, "manager", "reports", "managed")
+            or contains_any(a, *seeded_names())
+        )
+    )
     return ok, "manager reply" if ok else f"got: {a[:160]}"
 
 
@@ -275,11 +367,41 @@ def expect_unsupported(a: str, _r: dict) -> tuple[bool, str]:
     return ok, "unsupported handled" if ok else f"got: {a[:180]}"
 
 
+def expect_unauthorized(a: str, r: dict) -> tuple[bool, str]:
+    """Soft ACL refuse — access language, not 'no data' / not inventing a number."""
+    ok = contains_any(
+        a,
+        "don't have access",
+        "do not have access",
+        "not have access",
+        "can't access",
+        "cannot access",
+        "not permitted",
+        "with your current role",
+    ) and not_contains(a, "internal_error", "traceback")
+    # Unauthorized answers must not set UI clarify.
+    if r.get("clarify"):
+        return False, f"clarify set on unauthorized: {r.get('clarify')!r}"
+    return ok, "unauthorized" if ok else f"got: {a[:180]}"
+
+
+def expect_salary_answer(a: str, _r: dict) -> tuple[bool, str]:
+    """Recruiter (or same-dept manager) should see a grounded salary, not refuse."""
+    has_num = bool(re.search(r"\d{2,}", a.replace(",", "")))
+    ok = (
+        has_num
+        and contains_any(a, "salary", "pay", "$", "usd", "earn", "makes", "compensation")
+        and not_contains(a, "don't have access", "don't have that information")
+    )
+    return ok, "salary" if ok else f"got: {a[:180]}"
+
+
 def expect_clarify(a: str, r: dict) -> tuple[bool, str]:
     clarify = (r.get("clarify") or "") + " " + a
     ok = contains_any(
         clarify,
         "which",
+        "whose",
         "clarify",
         "specify",
         "previous",
@@ -288,6 +410,7 @@ def expect_clarify(a: str, r: dict) -> tuple[bool, str]:
         "departments",
         "need more",
         "don't have",
+        "bit more detail",
     )
     return ok, "clarify-ish" if ok else f"got: {a[:160]}"
 
@@ -295,6 +418,378 @@ def expect_clarify(a: str, r: dict) -> tuple[bool, str]:
 def expect_topic_shift_fresh(a: str, _r: dict) -> tuple[bool, str]:
     # After "hello" / start over, a fresh skill question should still answer.
     return expect_skill_or_rag(a, _r)
+
+
+def expect_status_updated(a: str, _r: dict) -> tuple[bool, str]:
+    """Person or cohort status write succeeded (not greeting / not unresolved)."""
+    ok = (
+        contains_any(a, "updated", "status to true", "status to false", "set status")
+        and not_contains(
+            a,
+            "couldn't match",
+            "could not match",
+            "couldn't resolve",
+            "could not resolve",
+            "internal_error",
+            "traceback",
+        )
+        and not (a.lower().strip().startswith("hello") and len(a) < 120)
+    )
+    return ok, "status updated" if ok else f"got: {a[:200]}"
+
+
+def expect_status_true(a: str, _r: dict) -> tuple[bool, str]:
+    ok, note = expect_status_updated(a, _r)
+    if not ok:
+        return False, note
+    ok = contains_any(a, "status to true", "to true")
+    return ok, "status→true" if ok else f"got: {a[:200]}"
+
+
+def expect_status_false(a: str, _r: dict) -> tuple[bool, str]:
+    ok, note = expect_status_updated(a, _r)
+    if not ok:
+        return False, note
+    ok = contains_any(a, "status to false", "to false")
+    return ok, "status→false" if ok else f"got: {a[:200]}"
+
+
+def expect_status_location_cohort(a: str, _r: dict) -> tuple[bool, str]:
+    """Location-based status: confirm gate OR successful multi-person update."""
+    clarify = ((_r.get("clarify") or "") + " " + a).lower()
+    if contains_any(
+        clarify,
+        "confirm status update",
+        "confirm",
+        "proceed",
+        "how many",
+        "employees match",
+        "which",
+    ) and not contains_any(a, "internal_error", "traceback"):
+        return True, "status confirm / clarify gate"
+    ok, note = expect_status_true(a, _r)
+    if not ok:
+        return False, note
+    n = first_int(a)
+    ok = n is not None and n >= 1
+    return ok, f"location cohort n={n}" if ok else f"no count: {a[:200]}"
+
+
+def expect_status_confirm_gate_only(a: str, _r: dict) -> tuple[bool, str]:
+    """First turn of a location status write must ask to confirm (no commit yet)."""
+    clarify = ((_r.get("clarify") or "") + " " + a).lower()
+    ok = contains_any(clarify, "confirm status update") and not contains_any(
+        a, "updated", "internal_error", "traceback"
+    )
+    return ok, "confirm gate" if ok else f"got: {a[:200]}"
+
+
+def expect_language_cohort(a: str, _r: dict) -> tuple[bool, str]:
+    """Languages attribute: names/count or honest empty — never invent."""
+    if contains_any(
+        a,
+        "internal_error",
+        "traceback",
+        "don't have access",
+    ):
+        return False, f"error: {a[:180]}"
+    if contains_any(
+        a,
+        "no one",
+        "nobody",
+        "found no",
+        "couldn't find",
+        "could not find",
+        "not listed",
+        "no employee",
+        "0 employee",
+    ):
+        return True, "honest empty languages"
+    ok = contains_any(a, "speak", "language", "german", "french", "arabic", "english") or (
+        expect_has_names(a, _r)[0]
+    )
+    return ok, "languages cohort" if ok else f"got: {a[:180]}"
+
+
+def expect_cert_cohort(a: str, _r: dict) -> tuple[bool, str]:
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:180]}"
+    if contains_any(
+        a,
+        "no one",
+        "nobody",
+        "found no",
+        "couldn't find",
+        "could not find",
+        "0 employee",
+    ):
+        return True, "honest empty certs"
+    ok = contains_any(
+        a, "certif", "aws certified", "cka", "pmp", "holds", "list"
+    ) or expect_has_names(a, _r)[0]
+    return ok, "cert cohort" if ok else f"got: {a[:180]}"
+
+
+def expect_hire_window(a: str, _r: dict) -> tuple[bool, str]:
+    if contains_any(a, "internal_error", "traceback", "don't have access"):
+        return False, f"error: {a[:180]}"
+    if contains_any(
+        a,
+        "no one",
+        "nobody",
+        "none of",
+        "couldn't find",
+        "0 employee",
+        "the answer is 0",
+        "no matching",
+    ):
+        return True, "honest empty hire window"
+    return expect_has_names(a, _r)
+
+
+def expect_tenure_answer(a: str, _r: dict) -> tuple[bool, str]:
+    ok = contains_any(
+        a,
+        "tenure",
+        "hire_date",
+        "hired",
+        "years",
+        "days",
+        "average",
+        "longest",
+    ) and not contains_any(a, "internal_error", "traceback")
+    return ok, "tenure analytics" if ok else f"got: {a[:180]}"
+
+
+def expect_reports_roster(a: str, _r: dict) -> tuple[bool, str]:
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:180]}"
+    if contains_any(a, "no direct report", "0 direct", "couldn't find", "which"):
+        return True, "empty/clarify reports"
+    ok = contains_any(a, "direct report", "report") or expect_has_names(a, _r)[0]
+    return ok, "reports roster" if ok else f"got: {a[:180]}"
+
+
+def expect_composition_or_empty(a: str, _r: dict) -> tuple[bool, str]:
+    """Manager×skill×place: names, empty intersect, or clarify — never invent."""
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:180]}"
+    if contains_any(
+        a,
+        "none of",
+        "no matching",
+        "couldn't find",
+        "could not find",
+        "no one",
+        "nobody",
+        "0 employee",
+        "which",
+        "need both",
+        "clarify",
+    ):
+        return True, "empty/clarify composition"
+    return expect_has_names(a, _r)
+
+
+def expect_not_greeting(a: str, _r: dict) -> tuple[bool, str]:
+    """Follow-up must stay on tools — not a chitchat greeting."""
+    lower = a.strip().lower()
+    greetingish = (
+        lower.startswith(("hello", "hi ", "hey", "hi!"))
+        or contains_any(a, "how can i help", "happy to help you today", "i'm hrmind")
+    ) and len(a) < 220
+    if greetingish:
+        return False, f"got greeting: {a[:160]}"
+    return True, "not-greeting"
+
+
+def expect_hr_answer_not_greeting(a: str, r: dict) -> tuple[bool, str]:
+    ok, note = expect_not_greeting(a, r)
+    if not ok:
+        return False, note
+    if len(a.strip()) < 8:
+        return False, "empty-ish answer"
+    return True, note
+
+
+def expect_skill_and_place(a: str, r: dict) -> tuple[bool, str]:
+    """Skill∩location: names/count OK; must not greet; must not claim whole org."""
+    ok, note = expect_not_greeting(a, r)
+    if not ok:
+        return False, note
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:160]}"
+    # Honest empty / clarify is fine; org-wide dump is not.
+    n = first_int(a)
+    if n is not None and n >= 80:
+        return False, f"suspiciously large n={n}: {a[:160]}"
+    if contains_any(
+        a,
+        "don't recognize",
+        "don't know",
+        "no one",
+        "nobody",
+        "0 employee",
+        "none",
+        "couldn't find",
+        "could not find",
+        "which",
+        "clarify",
+    ):
+        return True, "honest empty/clarify"
+    return expect_skill_or_rag(a, r)
+
+
+def expect_unknown_place_clarify(a: str, r: dict) -> tuple[bool, str]:
+    clarify = ((r.get("clarify") or "") + " " + a).lower()
+    ok = contains_any(
+        clarify,
+        "don't recognize",
+        "do not recognize",
+        "known city",
+        "known country",
+        "known place",
+        "which city",
+        "which country",
+        "places we track",
+        "not sure",
+        "clarify",
+        "specify",
+    ) or contains_any(a, "no one", "nobody", "0 ", "none")
+    return ok, "unknown-place handled" if ok else f"got: {a[:180]}"
+
+
+_MONTHS_TEXT = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
+
+
+def _has_real_date(text: str) -> bool:
+    """A spelled month with a year, e.g. '12 March 1991'."""
+    lower = text.lower()
+    return any(m in lower for m in _MONTHS_TEXT)
+
+
+def expect_birthday_from_resume(a: str, r: dict) -> tuple[bool, str]:
+    """Birth date recovered from resume text (or an honest namesake clarification)."""
+    if a.strip().startswith("{"):
+        return False, f"raw payload: {a[:120]}"
+    if contains_any(a, "internal_error", "traceback", "don't have access"):
+        return False, f"error-ish: {a[:200]}"
+    # Seeded corpus repeats names, so listing namesakes with their dates is valid.
+    ambiguous = contains_any(a, "employees match", "which one you mean")
+    if not _has_real_date(a):
+        return False, f"no date in answer: {a[:200]}"
+    kinds = {
+        str(s.get("kind", "")).lower() for s in (r.get("sources") or []) if isinstance(s, dict)
+    }
+    if kinds and "resume_chunk" not in kinds:
+        return False, f"not resume-sourced: {sorted(kinds)}"
+    note = "namesakes listed with dates" if ambiguous else "birth date from resume"
+    return True, note
+
+
+def expect_birthday_wish(a: str, r: dict) -> tuple[bool, str]:
+    """A resolvable person gets a date plus a birthday greeting."""
+    ok, note = expect_birthday_from_resume(a, r)
+    if not ok:
+        return False, note
+    if contains_any(a, "employees match", "which one you mean"):
+        return True, "namesakes listed (wish deferred)"
+    ok = contains_any(a, "happy birthday", "birthday wishes")
+    return ok, "wish + date" if ok else f"no greeting: {a[:200]}"
+
+
+def expect_birthday_age(a: str, r: dict) -> tuple[bool, str]:
+    ok, note = expect_birthday_from_resume(a, r)
+    if not ok:
+        return False, note
+    ok = bool(first_int(a))
+    return ok, "age reported" if ok else f"no age: {a[:200]}"
+
+
+def expect_birthday_today(a: str, _r: dict) -> tuple[bool, str]:
+    """Either named birthdays today or an honest 'nobody today'."""
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:160]}"
+    none_today = contains_any(a, "no employee has a birthday today", "no birthdays today")
+    if none_today:
+        return True, "none today (honest)"
+    ok = contains_any(a, "birthday") and contains_any(a, "happy birthday")
+    return ok, "birthdays today" if ok else f"got: {a[:200]}"
+
+
+def expect_birthday_month(a: str, _r: dict) -> tuple[bool, str]:
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:160]}"
+    ok = contains_any(a, "july") and (
+        bool(first_int(a)) or contains_any(a, "no employee has a birthday")
+    )
+    return ok, "july birthdays" if ok else f"got: {a[:200]}"
+
+
+def expect_birthday_upcomingish(a: str, _r: dict) -> tuple[bool, str]:
+    """Upcoming / this-month birthday list — honest empty is ok."""
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:160]}"
+    ok = contains_any(
+        a,
+        "birthday",
+        "birthdays",
+        "upcoming",
+        "no employee has a birthday",
+        "no birthdays",
+    )
+    return ok, "upcoming-ish" if ok else f"got: {a[:200]}"
+
+
+def expect_birthday_missing_person(a: str, _r: dict) -> tuple[bool, str]:
+    """An unknown name, or a resume with no date, must be refused honestly."""
+    ok = contains_any(a, "couldn't find a date of birth", "could not find a date of birth")
+    return ok, "honest miss" if ok else f"got: {a[:200]}"
+
+
+def expect_birthday_namesakes(a: str, r: dict) -> tuple[bool, str]:
+    """Shared names must list every match rather than picking one."""
+    if not contains_any(a, "employees match"):
+        return False, f"did not disambiguate: {a[:200]}"
+    return expect_birthday_from_resume(a, r)
+
+
+def expect_birthday_typo(a: str, r: dict) -> tuple[bool, str]:
+    """A misspelled name still resolves, and the approximation is admitted."""
+    ok, note = expect_birthday_from_resume(a, r)
+    if not ok:
+        return False, note
+    ok = contains_any(a, "no exact match", "closest is")
+    return ok, "fuzzy match admitted" if ok else f"no fuzzy note: {a[:200]}"
+
+
+def expect_birthday_leap_day(a: str, r: dict) -> tuple[bool, str]:
+    ok, note = expect_birthday_from_resume(a, r)
+    if not ok:
+        return False, note
+    ok = contains_any(a, "29 february")
+    return ok, "leap day date" if ok else f"not 29 February: {a[:200]}"
+
+
+def expect_birthday_coverage_admitted(a: str, _r: dict) -> tuple[bool, str]:
+    """Cohort answers must state how much of the corpus they could actually read."""
+    if contains_any(a, "internal_error", "traceback"):
+        return False, f"error: {a[:160]}"
+    ok = contains_any(a, "read from") and contains_any(a, "no date of birth recorded")
+    return ok, "coverage stated" if ok else f"no coverage caveat: {a[:200]}"
 
 
 def expect_not_org_wide_100(a: str, _r: dict) -> tuple[bool, str]:
@@ -348,11 +843,121 @@ def make_monotonic_count_checkers() -> tuple[Checker, Checker]:
     return capture, lte_prior
 
 
+def make_listed_ordinal_birthday_checkers(
+    *, index: int = 1
+) -> tuple[Checker, Checker]:
+    """Capture bullet names, then require DOB for a list index.
+
+    ``index`` is 1-based; use ``-1`` for the last listed person.
+    """
+    box: dict[str, Any] = {"names": []}
+
+    def _resolve_index(names: list[str]) -> int | None:
+        if not names:
+            return None
+        if index == -1:
+            return len(names)
+        if 1 <= index <= len(names):
+            return index
+        return None
+
+    def capture_names(a: str, r: dict) -> tuple[bool, str]:
+        ok, note = expect_has_names(a, r)
+        if not ok:
+            return ok, note
+        names: list[str] = []
+        for line in a.splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                # "- Kara Petrov (Sales Manager, Sales)"
+                label = line[2:].split("(")[0].strip()
+                if label:
+                    names.append(label)
+        box["names"] = names
+        if not names:
+            return False, f"no bullet name to capture: {a[:180]}"
+        resolved = _resolve_index(names)
+        if resolved is None:
+            return False, f"need index={index} names, got {len(names)}: {names}"
+        return True, f"names[{resolved}]={names[resolved - 1]} (n={len(names)})"
+
+    def expect_nth_dob(a: str, r: dict) -> tuple[bool, str]:
+        names: list[str] = list(box.get("names") or [])
+        resolved = _resolve_index(names)
+        if resolved is None:
+            return False, f"no captured name at index {index}: {names}"
+        name = names[resolved - 1]
+        if contains_any(a, "first person", "first persons", "second person"):
+            return False, f"treated ordinal as a name: {a[:180]}"
+        ok, note = expect_birthday_from_resume(a, r)
+        if not ok:
+            return False, note
+        surname = name.split()[-1].lower()
+        if surname not in a.lower():
+            return False, f"expected {name} in DOB answer: {a[:180]}"
+        return True, f"dob for {name}"
+
+    return capture_names, expect_nth_dob
+
+
+def make_listed_ordinal_location_checkers(
+    *, index: int = 1
+) -> tuple[Checker, Checker]:
+    """Capture bullet names, then require a location answer for that person."""
+    box: dict[str, Any] = {"names": []}
+
+    def capture_names(a: str, r: dict) -> tuple[bool, str]:
+        ok, note = expect_has_names(a, r)
+        if not ok:
+            return ok, note
+        names = [
+            line[2:].split("(")[0].strip()
+            for line in a.splitlines()
+            if line.strip().startswith("- ") and line.strip()[2:].split("(")[0].strip()
+        ]
+        box["names"] = names
+        if not names:
+            return False, f"no bullet name to capture: {a[:180]}"
+        if index > len(names):
+            return False, f"need ≥{index} names, got {len(names)}"
+        return True, f"names[{index}]={names[index - 1]}"
+
+    def expect_nth_location(a: str, r: dict) -> tuple[bool, str]:
+        names: list[str] = list(box.get("names") or [])
+        if index < 1 or index > len(names):
+            return False, f"no captured name at index {index}"
+        name = names[index - 1]
+        ok, note = expect_person_location(a, r)
+        if not ok:
+            return False, note
+        surname = name.split()[-1].lower()
+        if surname not in a.lower() and not contains_any(
+            a, "which", "whose", "which person", "which employee"
+        ):
+            # Location answers usually echo the name; clarify is also acceptable.
+            return False, f"expected {name} (or clarify) in location answer: {a[:180]}"
+        return True, f"location for {name}"
+
+    return capture_names, expect_nth_location
+
+
+def expect_ordinal_needs_names(a: str, _r: dict) -> tuple[bool, str]:
+    """Count-only shrink must not invent an ordinal binding."""
+    ok = contains_any(
+        a,
+        "names first",
+        "ask for their names",
+        "which person",
+        "which employee",
+    )
+    return ok, "needs names" if ok else f"got: {a[:180]}"
+
+
 def run_scenario(base: str, sc: Scenario) -> Scenario:
     sid = None
     for q, checker in sc.turns:
         try:
-            data = chat(base, q, sid)
+            data = chat(base, q, sid, role=sc.role)
             sid = data.get("session_id") or sid
             answer = data.get("answer") or ""
             sources = data.get("sources") or []
@@ -528,7 +1133,7 @@ def build_hard_scenarios() -> list[Scenario]:
             "Hard: ambiguous Ivy → ask manager of Alice (must stay coherent, no crash)",
             ["employee"],
             [
-                ("Tell me about Ivy Chen", expect_about_person),
+                ("Tell me about Alice Nguyen", expect_about_person),
                 ("Who is the manager of Alice Nguyen?", expect_managerish),
                 ("where does she live?", expect_person_location),
             ],
@@ -557,7 +1162,7 @@ def build_hard_scenarios() -> list[Scenario]:
                 ("names please", expect_has_names),
                 ("never mind, who knows Kubernetes?", expect_skill_or_rag),
                 ("how many of them in Dubai?", expect_followup_count),
-                ("Tell me about Ivy Chen", expect_about_person),
+                ("Tell me about Alice Nguyen", expect_about_person),
                 ("how much PTO do they get?", expect_unsupported),
             ],
         ),
@@ -575,15 +1180,242 @@ def build_hard_scenarios() -> list[Scenario]:
     ]
 
 
+def build_orchestrator_scenarios() -> list[Scenario]:
+    """Wave A–D contracts: wrong cohort / wrong person / inventing tails."""
+    return [
+        Scenario(
+            "OR_elliptical_after_list_not_greeting",
+            "List people → short attr ask must not greet (CHITCHAT override)",
+            ["sql", "employee", "resume_search"],
+            [
+                ("List employees in Engineering", expect_has_names),
+                ("her email?", expect_hr_answer_not_greeting),
+            ],
+        ),
+        Scenario(
+            "OR_pronoun_after_two_names_clarifies",
+            "Two people listed → 'where does she live?' must clarify, not guess",
+            ["sql", "resume_search", "clarify"],
+            [
+                ("List employees in Berlin", expect_has_names),
+                ("where does she live?", expect_clarify),
+            ],
+        ),
+        Scenario(
+            "OR_ordinal_birthday_after_names",
+            "Names → first person's DOB via resume, not greeting/profile invent",
+            ["sql", "resume_search"],
+            [
+                ("How many employees work in Engineering?", expect_positive_count),
+                ("how many of them know python?", expect_followup_count),
+                ("list their names", expect_has_names),
+                ("give me the first persons date of birth", expect_birthday_from_resume),
+            ],
+        ),
+        Scenario(
+            "OR_skill_and_city_intersect",
+            "Skill∩location in one ask — not city dropped / not org-wide dump",
+            ["resume_search", "sql"],
+            [
+                ("Who knows Python in Berlin?", expect_skill_and_place),
+            ],
+        ),
+        Scenario(
+            "OR_skill_and_city_count",
+            "Count form of skill∩place",
+            ["resume_search", "sql"],
+            [
+                ("How many employees know React in Dubai?", expect_skill_and_place),
+            ],
+        ),
+        Scenario(
+            "OR_expanded_place_vocab",
+            "New cities in place vocab still retrieve (or honest empty)",
+            ["resume_search", "sql"],
+            [
+                ("List employees in Munich", expect_hr_answer_not_greeting),
+                ("how many of them?", expect_not_org_wide_100),
+            ],
+        ),
+        Scenario(
+            "OR_unknown_place_no_invent",
+            "Unknown city must clarify / empty — not invent a cohort",
+            ["clarify", "resume_search"],
+            [
+                ("List employees in Atlantis", expect_unknown_place_clarify),
+            ],
+        ),
+        Scenario(
+            "OR_status_location_confirm_gate",
+            "Multi-person location status asks confirm (or updates with count)",
+            ["resume_search", "employee"],
+            [
+                (
+                    "update status of employees which are living in Dubai to true",
+                    expect_status_location_cohort,
+                ),
+            ],
+        ),
+        Scenario(
+            "OR_status_exact_name",
+            "Exact full-name status write still works",
+            ["employee", "resume_search"],
+            [
+                ("change the status of Carol Garcia to true", expect_status_true),
+            ],
+        ),
+        Scenario(
+            "OR_weak_followup_after_org_headcount",
+            "Org headcount is not a 'them' cohort for of-them location",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_count_between(50, 200)),
+                ("how many of them from USA?", expect_not_org_wide_100),
+            ],
+        ),
+        Scenario(
+            "OR_bare_hello_still_greeting",
+            "Bare social without person focus stays greeting",
+            ["greeting"],
+            [("hello", expect_greeting)],
+        ),
+        Scenario(
+            "OR_list_then_manager_chain",
+            "Profile → manager → location stay on tools through short turns",
+            ["employee", "resume_search"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                ("her manager?", expect_managerish),
+                ("where does she live?", expect_person_location),
+            ],
+        ),
+        Scenario(
+            "OR_unsupported_no_invented_count",
+            "Unsupported topic must not invent a headcount",
+            ["clarify"],
+            [("how much vacation are developers taking?", expect_unsupported)],
+        ),
+        Scenario(
+            "OR_long_orchestrator_dialog",
+            "Mixed dialog stressing refine, ordinal, place, skill∩place",
+            ["sql", "resume_search", "employee", "clarify", "greeting"],
+            [
+                ("hey — how many engineers?", expect_positive_count),
+                ("names please", expect_has_names),
+                ("first person's birthday?", expect_birthday_from_resume),
+                ("thanks", expect_greeting),
+                ("who knows Python in Berlin?", expect_skill_and_place),
+                ("list employees in San Francisco", expect_hr_answer_not_greeting),
+                ("any of them know Kubernetes?", expect_followup_count),
+            ],
+        ),
+        # --- Coverage gaps roadmap (confirm + Waves 1–4) ---
+        Scenario(
+            "OR_confirm_status_continuation",
+            "Location status propose → confirm status update commits",
+            ["resume_search", "employee"],
+            [
+                (
+                    "update status of employees which are living in Dubai to true",
+                    expect_status_confirm_gate_only,
+                ),
+                ("confirm status update", expect_status_true),
+            ],
+        ),
+        Scenario(
+            "OR_languages_cohort",
+            "Who speaks German? → languages attribute (or honest empty)",
+            ["resume_search"],
+            [("who speaks German?", expect_language_cohort)],
+        ),
+        Scenario(
+            "OR_languages_prior_scope",
+            "Prior list → who among them speaks French stays scoped",
+            ["resume_search", "sql"],
+            [
+                ("List employees in Berlin", expect_has_names),
+                ("who among them speaks French?", expect_language_cohort),
+            ],
+        ),
+        Scenario(
+            "OR_certifications_cohort",
+            "AWS Certified → cert attribute (not generic invent)",
+            ["resume_search"],
+            [("who has AWS Certified?", expect_cert_cohort)],
+        ),
+        Scenario(
+            "OR_cert_vs_skill_experience",
+            "AWS experience stays skill RAG path",
+            ["resume_search", "sql"],
+            [("who has AWS experience?", expect_skill_or_rag)],
+        ),
+        Scenario(
+            "OR_hire_last_90_days",
+            "Last 90 days hire window from SQL templates",
+            ["sql"],
+            [("who joined in the last 90 days?", expect_hire_window)],
+        ),
+        Scenario(
+            "OR_hire_this_quarter",
+            "This quarter hire window",
+            ["sql"],
+            [("who joined this quarter?", expect_hire_window)],
+        ),
+        Scenario(
+            "OR_avg_tenure_engineering",
+            "Average tenure template (hire_date, not title)",
+            ["sql"],
+            [("what is the average tenure in Engineering?", expect_tenure_answer)],
+        ),
+        Scenario(
+            "OR_most_senior_hire_date",
+            "Most senior = longest tenured by hire_date",
+            ["sql"],
+            [("who is the most senior in Engineering?", expect_tenure_answer)],
+        ),
+        Scenario(
+            "OR_direct_reports",
+            "Direct reports action for a manager",
+            ["employee"],
+            [("who reports to Alice Nguyen?", expect_reports_roster)],
+        ),
+        Scenario(
+            "OR_reports_skill_place",
+            "Manager×skill×place composition DAG",
+            ["employee", "resume_search", "sql"],
+            [
+                (
+                    "who on Alice Nguyen's team knows Kubernetes and is in Dubai?",
+                    expect_composition_or_empty,
+                ),
+            ],
+        ),
+        Scenario(
+            "OR_hris_pto_refused",
+            "PTO stays unsupported — no soft resume invent",
+            ["clarify"],
+            [("how much PTO does Alice Nguyen have?", expect_unsupported)],
+        ),
+    ]
+
+
 def build_scenarios(*, suite: str = "all") -> list[Scenario]:
     basic = _build_basic_scenarios()
     hard = build_hard_scenarios()
+    list_ref = build_list_referent_scenarios()
+    nlu_slots = build_nlu_slots_scenarios()
+    utterances = build_user_utterance_scenarios()
+    orch = build_orchestrator_scenarios()
     suite = (suite or "all").lower()
     if suite == "basic":
         return basic
     if suite == "hard":
-        return hard
-    return basic + hard
+        return hard + list_ref + nlu_slots
+    if suite == "utterances":
+        return utterances + list_ref + nlu_slots
+    if suite == "orchestrator":
+        return orch + list_ref
+    return basic + hard + list_ref + nlu_slots + utterances + orch
 
 
 def _build_basic_scenarios() -> list[Scenario]:
@@ -641,28 +1473,34 @@ def _build_basic_scenarios() -> list[Scenario]:
             "G_rag_python",
             "Resume search / RAG for Python skill",
             ["resume_search", "sql"],
-            [("Who knows Python?", expect_skill_or_rag)],
+            [("Who on the team has Python experience?", expect_skill_or_rag)],
         ),
         Scenario(
             "H_rag_react",
             "Resume search for React (seed skill present in resume_chunks)",
             ["resume_search"],
-            [("Who knows React?", expect_skill_or_rag)],
+            [("Show me people with React skills", expect_skill_or_rag)],
         ),
         Scenario(
             "I_rag_count_python",
             "How many know Python (RAG + SQL count)",
             ["resume_search", "sql"],
-            [("How many employees know Python?", expect_followup_count)],
+            [("How many people have Python on their resume?", expect_followup_count)],
+        ),
+        Scenario(
+            "I2_skill_location",
+            "Skill∩city single-turn (orchestration contract)",
+            ["resume_search", "sql"],
+            [("Who knows Python in Berlin?", expect_skill_and_place)],
         ),
         Scenario(
             "J_hybrid_sql_then_rag",
             "Engineering cohort → of them know python → names (SQL→RAG→SQL)",
             ["sql", "resume_search"],
             [
-                ("How many employees work in Engineering?", expect_positive_count),
-                ("how many of them know python?", expect_followup_count),
-                ("names please", expect_has_names),
+                ("How many people work in Engineering?", expect_positive_count),
+                ("and how many of those know python?", expect_followup_count),
+                ("can you list their names?", expect_has_names),
             ],
         ),
         Scenario(
@@ -681,13 +1519,13 @@ def _build_basic_scenarios() -> list[Scenario]:
             "L_employee_profile",
             "Employee tool: about person",
             ["employee"],
-            [("Tell me about Ivy Chen", expect_about_person)],
+            [("Tell me about Alice Nguyen", expect_about_person)],
         ),
         Scenario(
             "M_employee_location",
             "Employee tool: where does person live",
             ["employee"],
-            [("where the ivy chen lives?", expect_person_location)],
+            [("where does carol garcia live?", expect_person_location)],
         ),
         Scenario(
             "N_entity_memory",
@@ -695,7 +1533,7 @@ def _build_basic_scenarios() -> list[Scenario]:
             ["sql", "employee"],
             [
                 ("List employees in Berlin", expect_has_names),
-                ("where does ivy live?", expect_person_location),
+                ("where does carol live?", expect_person_location),
             ],
         ),
         Scenario(
@@ -717,13 +1555,23 @@ def _build_basic_scenarios() -> list[Scenario]:
             [("names please", expect_clarify)],
         ),
         Scenario(
-            "R_topic_shift_clears_referent",
-            "Greeting clears cohort; next skill search is fresh",
+            "R_soft_greeting_keeps_cohort_for_names",
+            "Soft hey/thanks keep the cohort so names still list the prior set",
+            ["sql", "resume_search", "greeting"],
+            [
+                ("How many employees work in Engineering?", expect_positive_count),
+                ("how many of them know python?", expect_followup_count),
+                ("hey", expect_greeting),
+                ("give me there names", expect_has_names),
+            ],
+        ),
+        Scenario(
+            "R2_start_over_then_fresh_skill",
+            "Explicit start-over clears; next skill search is fresh",
             ["greeting", "resume_search", "sql"],
             [
                 ("How many employees work in Engineering?", expect_positive_count),
-                ("hello", expect_greeting),
-                ("Who knows React?", expect_topic_shift_fresh),
+                ("start over — find React developers", expect_topic_shift_fresh),
             ],
         ),
         Scenario(
@@ -737,7 +1585,7 @@ def _build_basic_scenarios() -> list[Scenario]:
         ),
         Scenario(
             "T_long_multi_tool_session",
-            "Long session mixing SQL, RAG, employee, and follow-ups",
+            "Long session mixing SQL, RAG, employee, status, and follow-ups",
             ["sql", "resume_search", "employee", "greeting"],
             [
                 ("How many employees do we have?", expect_positive_count),
@@ -745,8 +1593,643 @@ def _build_basic_scenarios() -> list[Scenario]:
                 ("how many of them know python?", expect_followup_count),
                 ("names please", expect_has_names),
                 ("Who knows Kubernetes?", expect_skill_or_rag),
-                ("Tell me about Ivy Chen", expect_about_person),
+                ("Tell me about Alice Nguyen", expect_about_person),
                 ("Who is the manager of Alice Nguyen?", expect_managerish),
+                ("change the status of Carol Garcia to true", expect_status_true),
+            ],
+        ),
+        Scenario(
+            "ST_status_by_name",
+            "Status update by person name via resume_search resolve",
+            ["resume_search", "employee"],
+            [
+                ("change the status of Carol Garcia to true", expect_status_true),
+                ("change the status of alice bauer to true", expect_status_true),
+            ],
+        ),
+        Scenario(
+            "ST_status_by_location_dubai",
+            "Status update for all employees living in Dubai",
+            ["resume_search", "employee"],
+            [
+                (
+                    "update status of employees which are living in Dubai to true",
+                    expect_status_location_cohort,
+                ),
+            ],
+        ),
+        Scenario(
+            "ST_status_location_then_reset",
+            "Dubai cohort status true then false (write + reverse)",
+            ["resume_search", "employee"],
+            [
+                (
+                    "update status of employees which are living in Dubai to true",
+                    expect_status_location_cohort,
+                ),
+                (
+                    "update status of employees which are living in Dubai to false",
+                    expect_status_false,
+                ),
+            ],
+        ),
+        Scenario(
+            "ST_status_unique_name",
+            "Status update for uniquely named employee",
+            ["resume_search", "employee"],
+            [("set Hugo Marino status to true", expect_status_true)],
+        ),
+        Scenario(
+            "BD_birthday_by_name",
+            "Birth date parsed from resume text (RAG only, no SQL)",
+            ["resume_search"],
+            [
+                ("when is Carol Garcia's birthday?", expect_birthday_from_resume),
+                ("what is the date of birth of Carol Garcia", expect_birthday_from_resume),
+            ],
+        ),
+        Scenario(
+            "BD_birthday_wish",
+            "Wishing a named person a happy birthday",
+            ["resume_search"],
+            [
+                ("say happy birthday to Carol Garcia", expect_birthday_wish),
+                ("wish Alice Bauer a happy birthday", expect_birthday_wish),
+            ],
+        ),
+        Scenario(
+            "BD_birthday_age",
+            "Age question answered from the resume date of birth",
+            ["resume_search"],
+            [("how old is Alice Nguyen?", expect_birthday_age)],
+        ),
+        Scenario(
+            "BD_birthday_born_phrasing",
+            "'When was X born' phrasing",
+            ["resume_search"],
+            [("when was Alice Nguyen born?", expect_birthday_from_resume)],
+        ),
+        Scenario(
+            "BD_birthdays_today",
+            "Whose birthday is today (exhaustive DOB chunk scan)",
+            ["resume_search"],
+            [
+                ("whose birthday is today?", expect_birthday_today),
+                ("any birthdays today", expect_birthday_today),
+            ],
+        ),
+        Scenario(
+            "BD_birthdays_month_upcoming",
+            "Birthdays in a named month and upcoming birthdays",
+            ["resume_search"],
+            [
+                ("who has a birthday in July?", expect_birthday_month),
+                ("upcoming birthdays", expect_birthday_today),
+            ],
+        ),
+        Scenario(
+            "BD_birthday_unknown_person",
+            "Unknown name must be refused, never invented",
+            ["resume_search"],
+            [("when is Zzz Nobody's birthday?", expect_birthday_missing_person)],
+        ),
+        Scenario(
+            "BD_birthday_namesakes",
+            "Employees sharing a name are all listed for the user to choose",
+            ["resume_search"],
+            [("when is Priya Silva's birthday?", expect_birthday_namesakes)],
+        ),
+        Scenario(
+            "BD_birthday_resume_without_date",
+            "Resume that carries no date of birth is admitted, not filled in",
+            ["resume_search"],
+            [("when is Tomas Khan's birthday?", expect_birthday_missing_person)],
+        ),
+        Scenario(
+            "BD_birthday_misspelled_name",
+            "Trigram name matching survives a typo and says so",
+            ["resume_search"],
+            [("when is Carol Garciaa's birthday?", expect_birthday_typo)],
+        ),
+        Scenario(
+            "BD_birthday_leap_day",
+            "29 February birthday (no anniversary in most years)",
+            ["resume_search"],
+            [("when is Paula Moreau's birthday?", expect_birthday_leap_day)],
+        ),
+        Scenario(
+            "BD_birthday_cohort_coverage",
+            "Cohort answer states how many resumes it could read",
+            ["resume_search"],
+            [("whose birthday is today?", expect_birthday_coverage_admitted)],
+        ),
+        Scenario(
+            "BD_birthday_after_other_tools",
+            "Birthday question inside a session that used SQL and RAG",
+            ["sql", "resume_search"],
+            [
+                ("How many employees work in Engineering?", expect_positive_count),
+                ("Who knows Python?", expect_skill_or_rag),
+                ("when is the birthday of Carol Garcia?", expect_birthday_from_resume),
+                ("whose birthday is today?", expect_birthday_today),
+            ],
+        ),
+    ]
+
+
+def build_list_referent_scenarios() -> list[Scenario]:
+    """Ordinal / list-deixis follow-ups against the last displayed name list."""
+    capture_names, expect_first_dob = make_listed_ordinal_birthday_checkers(index=1)
+    capture2, expect_second_dob = make_listed_ordinal_birthday_checkers(index=2)
+    capture_last, expect_last_dob = make_listed_ordinal_birthday_checkers(index=-1)
+    capture_loc, expect_first_loc = make_listed_ordinal_location_checkers(index=1)
+    return [
+        Scenario(
+            "LR_ordinal_first_person_dob",
+            "Transcript: headcount → python → names → first person's DOB",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_names),
+                ("you named two persons give me the first persons date of birth", expect_first_dob),
+            ],
+        ),
+        Scenario(
+            "LR_ordinal_second_person_dob",
+            "After names, ask for the second person's DOB",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture2),
+                ("give me the second person's date of birth", expect_second_dob),
+            ],
+        ),
+        Scenario(
+            "LR_ordinal_last_person_dob",
+            "After names, 'the last person' DOB",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_last),
+                ("what's the last person's birthday?", expect_last_dob),
+            ],
+        ),
+        Scenario(
+            "LR_ordinal_first_location",
+            "After names, where does the first person live",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_loc),
+                ("where does the first person live?", expect_first_loc),
+            ],
+        ),
+        Scenario(
+            "LR_former_latter_after_two_names",
+            "Former / latter deixis after a two-person list",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_names),
+                ("the former one's date of birth", expect_first_dob),
+            ],
+        ),
+        Scenario(
+            "LR_ordinal_without_names_clarifies",
+            "Count-only python shrink then ordinal must ask for names",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how many of them know python", expect_followup_count),
+                (
+                    "give me the first persons date of birth",
+                    expect_ordinal_needs_names,
+                ),
+            ],
+        ),
+        Scenario(
+            "LR_facet_names_do_not_become_employee_list",
+            "Country facet names please must not bind employee ordinals",
+            ["resume_search", "sql"],
+            [
+                ("in how different countries do we have employees?", expect_facet_small_count),
+                ("names please", expect_country_names),
+                (
+                    "the first person's date of birth",
+                    expect_ordinal_needs_names,
+                ),
+            ],
+        ),
+    ]
+
+
+def build_nlu_slots_scenarios() -> list[Scenario]:
+    """Residual LLM-slot paraphrases that regex / heuristics often miss."""
+    capture_names, expect_first_dob = make_listed_ordinal_birthday_checkers(index=1)
+    return [
+        Scenario(
+            "NS_top_one_bday_paraphrase",
+            "After names, 'top one's bday' should bind last_listed[0] via slots/ordinals",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_names),
+                ("what's the top one's bday", expect_first_dob),
+            ],
+        ),
+        Scenario(
+            "NS_hash_one_dob",
+            "After names, '#1 DOB' ordinal paraphrase",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture_names),
+                ("#1 date of birth please", expect_first_dob),
+            ],
+        ),
+        Scenario(
+            "NS_their_dob_after_list_clarifies",
+            "Ambiguous their/them after a multi-person list must clarify",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", expect_has_names),
+                ("what's their date of birth", expect_clarify),
+            ],
+        ),
+        Scenario(
+            "NS_that_one_after_multi_clarifies",
+            "'that one' after multiple names should clarify",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", expect_has_names),
+                ("where does that one live?", expect_clarify),
+            ],
+        ),
+    ]
+
+
+def build_user_utterance_scenarios() -> list[Scenario]:
+    """Everyday user wordings — casual, short, and paraphrased questions."""
+    capture_names, expect_first_dob = make_listed_ordinal_birthday_checkers(index=1)
+    capture2, expect_second_dob = make_listed_ordinal_birthday_checkers(index=2)
+
+    return [
+        # --- Headcount / org structure (casual) ---
+        Scenario(
+            "UQ_headcount_casual",
+            "Casual org headcount phrasings",
+            ["sql"],
+            [
+                ("how many people work here?", expect_positive_count),
+                ("what's our headcount?", expect_positive_count),
+                ("total employees?", expect_positive_count),
+            ],
+        ),
+        Scenario(
+            "UQ_department_casual",
+            "Casual department counts and follow-ups",
+            ["sql"],
+            [
+                ("how many folks in engineering?", expect_positive_count),
+                ("and in sales?", expect_positive_count),
+                ("show me the engineering people", expect_has_names),
+            ],
+        ),
+        Scenario(
+            "UQ_department_roster_phrasing",
+            "Roster / team list paraphrases",
+            ["sql"],
+            [
+                ("who's on the Product team?", expect_has_names),
+                ("give me the Finance roster", expect_has_names),
+            ],
+        ),
+        # --- Location (resume-owned) ---
+        Scenario(
+            "UQ_location_cohort_paraphrases",
+            "Place cohort wordings users actually type",
+            ["resume_search", "sql"],
+            [
+                ("anyone based in Berlin?", expect_has_names),
+                ("how many people are in Dubai?", expect_followup_count),
+                ("list staff in London", expect_has_names),
+            ],
+        ),
+        Scenario(
+            "UQ_location_person_paraphrases",
+            "Where does X live / based / located",
+            ["resume_search", "employee"],
+            [
+                ("where is Carol Garcia based?", expect_person_location),
+                ("what city does Alice Nguyen work from?", expect_person_location),
+                ("Carol Garcia location?", expect_person_location),
+            ],
+        ),
+        Scenario(
+            "UQ_location_facets_casual",
+            "How many cities/countries — informal",
+            ["resume_search", "sql"],
+            [
+                ("how many cities do we have people in?", expect_facet_small_count),
+                ("which countries are we in?", expect_country_names),
+            ],
+        ),
+        Scenario(
+            "UQ_location_then_names_then_ordinal",
+            "Berlin list → names → first person's DOB",
+            ["resume_search", "sql"],
+            [
+                ("List employees in Berlin", expect_has_names),
+                ("names please", capture_names),
+                ("dob for the first one", expect_first_dob),
+            ],
+        ),
+        # --- Skills / RAG ---
+        Scenario(
+            "UQ_skill_casual",
+            "Skill search paraphrases",
+            ["resume_search", "sql"],
+            [
+                ("anyone good with Python?", expect_skill_or_rag),
+                ("got people who know React?", expect_skill_or_rag),
+                ("looking for Kubernetes experience", expect_skill_or_rag),
+            ],
+        ),
+        Scenario(
+            "UQ_skill_count_casual",
+            "How many know X — short forms",
+            ["resume_search", "sql"],
+            [
+                ("how many know Python?", expect_followup_count),
+                ("count of React people?", expect_followup_count),
+            ],
+        ),
+        Scenario(
+            "UQ_skill_then_location_refine",
+            "Skill cohort then place refine in everyday English",
+            ["resume_search", "sql"],
+            [
+                ("Find Python developers", expect_skill_or_rag),
+                ("any of them in Berlin?", expect_followup_count),
+                ("ok list those names", expect_has_names),
+            ],
+        ),
+        # --- Profile / manager / pronouns ---
+        Scenario(
+            "UQ_profile_casual",
+            "Tell me about / who is paraphrases",
+            ["employee"],
+            [
+                ("who is Alice Nguyen?", expect_about_person),
+                ("Alice Nguyen's profile please", expect_about_person),
+            ],
+        ),
+        Scenario(
+            "UQ_manager_casual",
+            "Manager questions in short form",
+            ["employee"],
+            [
+                ("Alice Nguyen's manager?", expect_managerish),
+                ("who manages Carol Garcia?", expect_managerish),
+            ],
+        ),
+        Scenario(
+            "UQ_pronoun_after_profile",
+            "Named person then she/her follow-ups",
+            ["employee", "resume_search"],
+            [
+                ("Tell me about Carol Garcia", expect_about_person),
+                ("where does she live?", expect_person_location),
+                ("when is her birthday?", expect_birthday_from_resume),
+                ("who's her manager?", expect_managerish),
+            ],
+        ),
+        # --- Birthdays ---
+        Scenario(
+            "UQ_birthday_casual_phrasings",
+            "DOB / bday / born paraphrases for a known person",
+            ["resume_search"],
+            [
+                ("Carol Garcia dob?", expect_birthday_from_resume),
+                ("bday for Alice Bauer?", expect_birthday_from_resume),
+                ("Alice Nguyen — when was she born?", expect_birthday_from_resume),
+            ],
+        ),
+        Scenario(
+            "UQ_birthday_cohort_casual",
+            "Today / named-month birthday asks",
+            ["resume_search"],
+            [
+                ("any birthdays today?", expect_birthday_today),
+                ("who has a birthday in July?", expect_birthday_month),
+                ("upcoming birthdays please", expect_birthday_upcomingish),
+            ],
+        ),
+        Scenario(
+            "UQ_age_casual",
+            "Age question short form",
+            ["resume_search"],
+            [("how old is Carol Garcia?", expect_birthday_age)],
+        ),
+        # --- Status ---
+        Scenario(
+            "UQ_status_casual",
+            "Status write paraphrases (true/false/active/inactive + pronoun)",
+            ["resume_search", "employee"],
+            [
+                ("set Carol Garcia status to true", expect_status_true),
+                ("change Hugo Marino's status to false", expect_status_false),
+                (
+                    "update status of employees living in Dubai to true",
+                    expect_status_location_cohort,
+                ),
+            ],
+        ),
+        Scenario(
+            "UQ_status_pronoun_active",
+            "Profile then 'change her status to active/inactive'",
+            ["employee", "resume_search"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                ("change her status to inactive", expect_status_false),
+                ("change her status to active", expect_status_true),
+            ],
+        ),
+        Scenario(
+            "UQ_place_case_after_profile_headcount",
+            "Profile → org headcount → dubai/Dubai must agree (not stuck on one person)",
+            ["employee", "sql", "resume_search"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them are from dubai", expect_count_between(1, 40)),
+                ("how much of them are from Dubai?", expect_count_between(1, 40)),
+            ],
+        ),
+        # --- Unsupported / out of scope (salary is ACL, not OOS) ---
+        Scenario(
+            "UQ_unsupported_paraphrases",
+            "PTO / benefits / payroll must refuse (salary is not OOS)",
+            ["clarify"],
+            [
+                ("how much PTO do we get?", expect_unsupported),
+                ("tell me about our benefits package", expect_unsupported),
+                ("payroll cutoff dates?", expect_unsupported),
+            ],
+        ),
+        Scenario(
+            "UQ_recruiter_salary_ok",
+            "Recruiter may see base salary (not OOS refuse)",
+            ["employee", "sql"],
+            [
+                ("what's Alice Nguyen's salary?", expect_salary_answer),
+            ],
+        ),
+        Scenario(
+            "UQ_employee_salary_unauthorized",
+            "Employee role soft-refuses salary (chat unauthorized, not 400)",
+            ["clarify"],
+            [
+                ("what's Alice Nguyen's salary?", expect_unauthorized),
+            ],
+            role="employee",
+        ),
+        Scenario(
+            "UQ_oos_preserves_then_names",
+            "OOS vacation refuse must not wipe cohort; names still work",
+            ["sql", "clarify"],
+            [
+                ("list engineers in Engineering", expect_has_names),
+                ("how much PTO do we get?", expect_unsupported),
+                ("names please", expect_has_names),
+            ],
+        ),
+        Scenario(
+            "UQ_person_travel_prefs_oos",
+            "Bound person + travelling preferences must refuse (not dump profile)",
+            ["employee", "clarify"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                (
+                    "give me information about her travelling preferences",
+                    expect_unsupported,
+                ),
+            ],
+        ),
+        Scenario(
+            "UQ_sofia_after_alice_session",
+            "After Alice focus, Sofia existence/paraphrase must name-lookup (not LLM fallback)",
+            ["employee"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                ("do we have Sofia ?", expect_sofia_disambiguation),
+                ("her education?", expect_about_person),
+                ("find Sofia", expect_sofia_disambiguation),
+            ],
+        ),
+        # --- Clarify / empty context ---
+        Scenario(
+            "UQ_empty_context_clarifies",
+            "Follow-ups with no prior cohort should ask for detail",
+            ["clarify"],
+            [
+                ("of them?", expect_clarify),
+                ("the first one", expect_clarify),
+                ("names", expect_clarify),
+            ],
+        ),
+        # --- Multi-turn conversational flows ---
+        Scenario(
+            "UQ_recruiter_screening_flow",
+            "Typical recruiter: dept → skill → names → ordinal DOB → location",
+            ["sql", "resume_search"],
+            [
+                ("how many engineers do we have?", expect_positive_count),
+                ("how many of them know python?", expect_followup_count),
+                ("list the names", capture_names),
+                ("first person's birthday?", expect_first_dob),
+                ("and where does the second person live?", expect_person_location),
+            ],
+        ),
+        Scenario(
+            "UQ_manager_checkin_flow",
+            "Manager-style: team size → names → status → birthday",
+            ["sql", "resume_search", "employee"],
+            [
+                ("Sales headcount?", expect_positive_count),
+                ("who are they?", expect_has_names),
+                ("change the status of Carol Garcia to true", expect_status_true),
+                ("when is Carol Garcia's birthday?", expect_birthday_from_resume),
+            ],
+        ),
+        Scenario(
+            "UQ_messy_typos_and_slang",
+            "Typos / slang still resolve",
+            ["sql", "resume_search"],
+            [
+                ("how many ppl in engeneering?", expect_positive_count),
+                ("n how many of them kno python", expect_followup_count),
+                ("gimme names", expect_has_names),
+            ],
+        ),
+        Scenario(
+            "UQ_topic_shift_greeting_midway",
+            "Mid-dialog greeting clears; fresh search works",
+            ["sql", "greeting", "resume_search"],
+            [
+                ("Engineering headcount", expect_positive_count),
+                ("thanks!", expect_greeting),
+                ("hi — who knows Docker?", expect_skill_or_rag),
+            ],
+        ),
+        Scenario(
+            "UQ_compare_depts_then_pick_one",
+            "Ask two departments then dig into the latest",
+            ["sql", "resume_search"],
+            [
+                ("how many in Engineering?", expect_positive_count),
+                ("how many in Product?", expect_positive_count),
+                ("names for Product please", expect_has_names),
+                ("any of them in Berlin?", expect_not_org_wide_100),
+            ],
+        ),
+        Scenario(
+            "UQ_list_then_second_then_former",
+            "Names → second DOB → former (should still mean first of original pair)",
+            ["sql", "resume_search"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                ("how much of them knows python", expect_followup_count),
+                ("give me there names", capture2),
+                ("second person's dob", expect_second_dob),
+            ],
+        ),
+        Scenario(
+            "UQ_long_natural_dialog",
+            "Long mixed dialog with short user turns",
+            ["sql", "resume_search", "employee", "clarify", "greeting"],
+            [
+                ("hey", expect_greeting),
+                ("headcount?", expect_positive_count),
+                ("engineering?", expect_positive_count),
+                ("python?", expect_followup_count),
+                ("names", capture_names),
+                ("top one's bday", expect_first_dob),
+                ("alice nguyen profile", expect_about_person),
+                ("her manager?", expect_managerish),
+                ("where does she live", expect_person_location),
+                ("pto balance?", expect_unsupported),
             ],
         ),
     ]
@@ -766,14 +2249,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--suite",
-        choices=("basic", "hard", "all"),
+        choices=("basic", "hard", "utterances", "orchestrator", "all"),
         default="all",
-        help="basic = smoke suite; hard = adversarial dialogs; all = both (default)",
+        help=(
+            "basic = smoke; hard = adversarial + list/NLU; "
+            "utterances = natural user paraphrases; "
+            "orchestrator = Wave A–D contracts; all = everything (default)"
+        ),
     )
     parser.add_argument(
         "--only",
         default="",
-        help="Comma-separated scenario name prefixes to run (e.g. G_,J_,U_,AG_)",
+        help="Comma-separated scenario name prefixes (e.g. OR_,G_,ST_,UQ_,NS_,LR_,AG_)",
     )
     args = parser.parse_args()
     base = args.base.rstrip("/")

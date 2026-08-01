@@ -45,6 +45,9 @@ class FakeLLM:
             return "SELECT id, first_name, last_name, department FROM employees LIMIT 50", usage
 
         if response_json:
+            # Residual slot extractor (nlu_slots.md) — before free-form planner.
+            if "dialogue slots" in system_l or "person_ref" in system_l or "nlu" in system_l:
+                return json.dumps(_fake_slot_bundle(user)), usage
             if "plan" in system_l or "execution" in system_l:
                 plan = {
                     "version": "1",
@@ -77,3 +80,77 @@ class FakeLLM:
             return json.dumps({"ok": True, "echo": user[:200]}), usage
 
         return f"Echo: {user[:500]}", usage
+
+
+def _fake_slot_bundle(user: str) -> dict[str, Any]:
+    """Deterministic slot JSON for hermetic tests / offline FakeLLM."""
+    q = ""
+    try:
+        payload = json.loads(user)
+        q = str(payload.get("question") or "").lower()
+        listed = payload.get("last_listed") or []
+    except Exception:
+        q = user.lower()
+        listed = []
+
+    def base(**overrides: Any) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "intent": "unknown",
+            "attribute": "none",
+            "person_ref": {"kind": "none", "value": None, "index": None},
+            "refers_to_prior": False,
+            "skill": None,
+            "facet_dimension": None,
+            "city": None,
+            "country": None,
+            "department": None,
+            "position": None,
+            "status_value": None,
+            "want_count": False,
+            "wants_age": False,
+            "wants_wish": False,
+            "confidence": 0.85,
+            "notes": ["fake_llm"],
+        }
+        data.update(overrides)
+        return data
+
+    if any(w in q for w in ("pto", "vacation", "benefits", "payroll")):
+        return base(intent="unsupported", confidence=0.9)
+
+    if "top one" in q or "earlier person" in q or "#1" in q:
+        return base(
+            intent="birthday",
+            attribute="dob",
+            person_ref={"kind": "ordinal", "value": "first", "index": 1},
+            confidence=0.9 if listed else 0.7,
+        )
+
+    if "how many cities" in q or "different cities" in q:
+        return base(
+            intent="facet_count",
+            attribute="facet",
+            facet_dimension="city",
+            want_count=True,
+            confidence=0.9,
+        )
+
+    if "based in berlin" in q or "working out of berlin" in q or "in berlin" in q:
+        return base(
+            intent="location_cohort",
+            attribute="location",
+            city="Berlin",
+            want_count="how many" in q,
+            confidence=0.88,
+        )
+
+    if "bday" in q or "date of birth" in q or "dob" in q:
+        return base(
+            intent="birthday",
+            attribute="dob",
+            person_ref={"kind": "ordinal", "value": "first", "index": 1},
+            confidence=0.8,
+        )
+
+    # Low-confidence unknown — forces fallthrough when tests need the planner.
+    return base(intent="unknown", confidence=0.2)

@@ -17,8 +17,14 @@ def test_engineering_count_plan() -> None:
 def test_who_knows_python_uses_resume_search() -> None:
     plan = try_heuristic_plan("Who knows Python?")
     assert plan is not None
-    assert [n.name for n in plan.nodes] == ["resume_search", "extract_employee_ids"]
-    assert plan.active_cohort_node == "ids"
+    assert [n.name for n in plan.nodes] == [
+        "resume_search",
+        "extract_employee_ids",
+        "sql",
+    ]
+    # SQL name materialization keeps last_listed aligned with the answer order.
+    assert plan.active_cohort_node == "sql1"
+    assert plan.response_strategy == "template"
 
 
 def test_how_many_know_python_counts_via_resume_ids() -> None:

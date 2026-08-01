@@ -348,6 +348,7 @@ def build_cohort_answer(
     today: date | None = None,
     coverage: tuple[int, int] | None = None,
     among_prior: bool = False,
+    **_ignored: Any,
 ) -> str:
     """Answer 'whose birthday is today', 'birthdays in July', 'upcoming birthdays'."""
     return _cohort_answer(

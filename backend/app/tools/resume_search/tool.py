@@ -418,18 +418,12 @@ class ResumeSearchTool:
                 "coverage": coverage,
                 "language": params.get("language"),
                 "certification": params.get("certification"),
+                "among_prior": bool(scoped and scope_ids),
             }
             # Prefer the filtered cohort when the attribute publishes ids.
+            # Attribute answer_cohort callables ignore unknown kwargs via **_ignored.
             answer_facts = matched if attribute.publishes_cohort_ids else facts
-            # Birthday cohort answers accept among_prior; other attributes ignore extras.
-            try:
-                answer = attribute.answer_cohort(
-                    answer_facts,
-                    **cohort_kwargs,
-                    among_prior=bool(scoped and scope_ids),
-                )
-            except TypeError:
-                answer = attribute.answer_cohort(answer_facts, **cohort_kwargs)
+            answer = attribute.answer_cohort(answer_facts, **cohort_kwargs)
         log.info(
             "resume_attribute_cohort",
             attribute=attribute.name,

@@ -303,6 +303,65 @@ def _languages_plan(state: QueryState) -> ExecutionPlan:
     )
 
 
+def _skills_person_plan(
+    *,
+    person_name: str | None,
+    employee_ids: list[str] | None = None,
+    skill: str | None = None,
+) -> ExecutionPlan:
+    """List (or check) skills from one person's resume Skills section."""
+    bound_ids = [str(x) for x in (employee_ids or []) if x]
+    if not person_name and not bound_ids:
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question="Whose skills would you like to know?",
+            refusal_code=RefusalCode.AMBIGUOUS.value,
+        )
+    name = person_name or "that employee"
+    params: dict = {
+        "question": name,
+        "purpose": "skills_person",
+        "name": name,
+    }
+    if bound_ids:
+        params["employee_ids"] = bound_ids
+    if skill:
+        params["skill"] = skill
+    return ExecutionPlan(
+        nodes=[PlanNode(id="r1", kind="tool", name="resume_search", params=params)],
+        response_strategy="template",
+    )
+
+
+def _experience_person_plan(
+    *,
+    person_name: str | None,
+    employee_ids: list[str] | None = None,
+) -> ExecutionPlan:
+    """Work history from one person's resume Experience section."""
+    bound_ids = [str(x) for x in (employee_ids or []) if x]
+    if not person_name and not bound_ids:
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question="Whose work experience would you like to know?",
+            refusal_code=RefusalCode.AMBIGUOUS.value,
+        )
+    name = person_name or "that employee"
+    params: dict = {
+        "question": name,
+        "purpose": "experience_person",
+        "name": name,
+    }
+    if bound_ids:
+        params["employee_ids"] = bound_ids
+    return ExecutionPlan(
+        nodes=[PlanNode(id="r1", kind="tool", name="resume_search", params=params)],
+        response_strategy="template",
+    )
+
+
 def _birthday_plan(state: QueryState) -> ExecutionPlan:
     """Birth dates exist only in resume text, so answer from retrieval alone."""
     scope = state.birthday_scope or "person"

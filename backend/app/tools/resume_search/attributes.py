@@ -11,7 +11,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from app.tools.resume_search import birthday, certifications, languages, location
+from app.tools.resume_search import (
+    birthday,
+    certifications,
+    experience,
+    languages,
+    location,
+    person_skills,
+)
 
 AttributeMode = Literal["person", "cohort", "facet"]
 
@@ -93,11 +100,35 @@ CERTIFICATIONS = ResumeAttribute(
     publishes_cohort_ids=True,
 )
 
+SKILLS = ResumeAttribute(
+    name="skills",
+    sections=("Skills",),
+    # No content_hints: hints OR with section and pull Experience chunks that
+    # mention "Python". Section filter alone is enough for a bound person.
+    content_hints=(),
+    extract=person_skills.parse_skills_list,
+    facts_from_hits=person_skills.facts_from_hits,
+    answer_person=person_skills.build_person_answer,
+    answer_cohort=None,
+    select_cohort=person_skills.select_cohort,
+)
+
+EXPERIENCE = ResumeAttribute(
+    name="experience",
+    sections=("Experience",),
+    content_hints=(),
+    extract=experience.parse_experience,
+    facts_from_hits=experience.facts_from_hits,
+    answer_person=experience.build_person_answer,
+)
+
 ATTRIBUTES: dict[str, ResumeAttribute] = {
     BIRTH_DATE.name: BIRTH_DATE,
     LOCATION.name: LOCATION,
     LANGUAGES.name: LANGUAGES,
     CERTIFICATIONS.name: CERTIFICATIONS,
+    SKILLS.name: SKILLS,
+    EXPERIENCE.name: EXPERIENCE,
 }
 
 # Plan node purposes map onto (attribute, mode) so the tool needs no per-fact branch.
@@ -111,6 +142,8 @@ _PURPOSES: dict[str, tuple[str, AttributeMode]] = {
     "languages_cohort": (LANGUAGES.name, "cohort"),
     "certifications_person": (CERTIFICATIONS.name, "person"),
     "certifications_cohort": (CERTIFICATIONS.name, "cohort"),
+    "skills_person": (SKILLS.name, "person"),
+    "experience_person": (EXPERIENCE.name, "person"),
 }
 
 

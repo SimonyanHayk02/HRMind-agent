@@ -13,12 +13,16 @@ from app.application.planning.unsupported import is_unsupported_topic
 from app.application.response.refusal import RefusalCode, out_of_scope_plan
 from app.application.understanding.birthday import extract_birthday
 from app.application.understanding.certifications import extract_certification
+from app.application.understanding.experience import extract_experience
 from app.application.understanding.languages import extract_language
+from app.application.understanding.person_skills import extract_person_skills
 from app.application.understanding.plan_from_query_state import (
     _birthday_plan,
     _certifications_plan,
+    _experience_person_plan,
     _languages_plan,
     _set_status_plan,
+    _skills_person_plan,
 )
 from app.application.understanding.status_change import extract_status_change
 from app.domain.query_state import QueryState
@@ -77,6 +81,18 @@ def bound_person_attribute_plan(
             )
         )
 
+    skills = extract_person_skills(q)
+    if skills.matched:
+        return _skills_person_plan(
+            person_name=name,
+            employee_ids=ids,
+            skill=skills.skill,
+        )
+
+    experience_req = extract_experience(q)
+    if experience_req.matched:
+        return _experience_person_plan(person_name=name, employee_ids=ids)
+
     status = extract_status_change(q)
     if status.matched:
         return _set_status_plan(
@@ -94,19 +110,19 @@ def bound_person_attribute_plan(
     asks_where = bool(_PERSON_LOCATION_RE.search(q)) or bool(
         _LOCATION_TOPIC_RE.search(q)
     )
-    if asks_where:
+    if asks_where and not extract_experience(q).matched:
         return location_person_plan(name, employee_ids=ids)
 
     if wants_person_lookup(q):
         return _employee_by_id_plan(ids[0])
 
-    # Ordinal/deixis resolved but attribute unclear — ask, don't dump the profile.
     return ExecutionPlan(
         nodes=[],
         response_strategy="template",
         clarify_question=(
             f"What would you like to know about {name}? "
-            "For example: profile, manager, location, birthday, languages, or status."
+            "For example: profile, manager, location, birthday, languages, "
+            "skills, experience, or status."
         ),
         refusal_code=RefusalCode.AMBIGUOUS.value,
     )

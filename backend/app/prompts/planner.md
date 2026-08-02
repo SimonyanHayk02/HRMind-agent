@@ -47,7 +47,7 @@ Rules:
   - NEVER use sql for birthdays; the date is not a queryable column
 - Education, email, department, position/title are employees-table columns — use employee action=by_id/by_name/profile (or sql filters). NEVER invent resume_search purposes like education_person / education_cohort.
 - Education is ONLY a level enum (Bootcamp, BSc, MBA / MSc, …). If the user asks how long they studied, when they graduated, or education start/end dates, return nodes=[] with clarify_question explaining you do not have that information (offer education level or company hire-date tenure instead). Do not ask which person when the gap is missing data.
-- Allowed resume_search purposes only: birthday_person, birthday_cohort, location_person, location_cohort, location_facet, languages_person, languages_cohort, certifications_person, certifications_cohort, status_resolve (and empty purpose for generic skill RAG)
+- Allowed resume_search purposes only: birthday_person, birthday_cohort, location_person, location_cohort, location_facet, languages_person, languages_cohort, certifications_person, certifications_cohort, skills_person, experience_person, status_resolve (and empty/purpose=skill for generic skill RAG)
 - Set active_cohort_node to the final intersect/extract/sql-rows node (not the broad resume_search hit list)
 - Apply active constraints (department/city/skill) when refining a prior result set
 - For "say their names" / "list them" / "names please":

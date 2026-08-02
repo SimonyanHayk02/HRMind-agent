@@ -49,6 +49,8 @@ RESUME_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "languages_cohort",
                 "certifications_person",
                 "certifications_cohort",
+                "skills_person",
+                "experience_person",
                 "status_resolve",
                 "skill",
             ],

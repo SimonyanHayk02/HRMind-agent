@@ -697,6 +697,44 @@ class PlanCompiler:
                 "heuristic_experience",
             )
 
+        # Resume Projects section ("what is her projects?").
+        from app.application.understanding.plan_from_query_state import (
+            _projects_person_plan,
+        )
+        from app.application.understanding.projects import extract_projects
+
+        projects_pre = extract_projects(q)
+        if projects_pre.matched:
+            bound_for_proj = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_proj
+                and memory
+                and len(memory.entity_memory) == 1
+                and not projects_pre.person_name
+            ):
+                bound_for_proj = str(memory.entity_memory[0].employee_id)
+            person_ids = [bound_for_proj] if bound_for_proj else []
+            person_name = projects_pre.person_name
+            if bound_for_proj and not person_name:
+                person_name = _entity_display_name(memory, bound_for_proj)
+            if not person_name and not person_ids:
+                return (
+                    ExecutionPlan(
+                        nodes=[],
+                        response_strategy="template",
+                        clarify_question="Whose projects would you like to know?",
+                        refusal_code=RefusalCode.AMBIGUOUS.value,
+                    ),
+                    "heuristic_projects",
+                )
+            return (
+                _projects_person_plan(
+                    person_name=person_name,
+                    employee_ids=person_ids,
+                ),
+                "heuristic_projects",
+            )
+
         pronoun_id = _resolve_pronoun_employee_id(q, memory)
         if _PRONOUN_ONLY_RE.search(q) and wants_person_lookup(q):
             # Bare pronoun person questions — never treat "she"/"he" as a name.

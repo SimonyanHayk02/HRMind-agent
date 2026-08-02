@@ -30,7 +30,7 @@ log = structlog.get_logger(__name__)
 # Cosine / lexical floor for generic skill RAG before publishing employee_ids.
 _GENERIC_MIN_SCORE = 0.32
 # Bump when attribute extractors/answers change so Redis cannot serve stale prose.
-_ATTRIBUTE_CACHE_VERSION = "attr-v2"
+_ATTRIBUTE_CACHE_VERSION = "attr-v3"
 
 
 def _score_gate_hits(

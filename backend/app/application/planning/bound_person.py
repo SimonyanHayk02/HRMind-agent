@@ -21,9 +21,11 @@ from app.application.understanding.plan_from_query_state import (
     _certifications_plan,
     _experience_person_plan,
     _languages_plan,
+    _projects_person_plan,
     _set_status_plan,
     _skills_person_plan,
 )
+from app.application.understanding.projects import extract_projects
 from app.application.understanding.status_change import extract_status_change
 from app.domain.query_state import QueryState
 
@@ -93,6 +95,10 @@ def bound_person_attribute_plan(
     if experience_req.matched:
         return _experience_person_plan(person_name=name, employee_ids=ids)
 
+    projects_req = extract_projects(q)
+    if projects_req.matched:
+        return _projects_person_plan(person_name=name, employee_ids=ids)
+
     status = extract_status_change(q)
     if status.matched:
         return _set_status_plan(
@@ -122,7 +128,7 @@ def bound_person_attribute_plan(
         clarify_question=(
             f"What would you like to know about {name}? "
             "For example: profile, manager, location, birthday, languages, "
-            "skills, experience, or status."
+            "skills, experience, projects, or status."
         ),
         refusal_code=RefusalCode.AMBIGUOUS.value,
     )

@@ -143,12 +143,18 @@ def test_plan_compiler_heuristic_path_skips_slot_llm() -> None:
         )
         assert mode in {
             "query_state",
+            "guard_query_state",
             "heuristic",
             "query_state_fallback",
             "heuristic_fallback",
             "tool_select",
         }
         assert plan.nodes
+        assert any(
+            (n.params or {}).get("filters", {}).get("department") == "Engineering"
+            or (n.params or {}).get("department") == "Engineering"
+            for n in plan.nodes
+        )
         # Residual slot extractor not used on this happy path.
         assert not any(
             "dialogue slots" in (c.get("system") or "").lower() for c in llm.calls

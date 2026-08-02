@@ -36,6 +36,38 @@ def test_extract_education_bootcamp() -> None:
     assert plan.nodes[-1].params["filters"]["education"] == "Bootcamp"
 
 
+def test_extract_masters_includes_msc_data_science() -> None:
+    """'masters' must not collapse to only the old MBA / MSc enum label."""
+    catalog = default_employee_catalog()
+    state = extract_query_state(
+        "give all employees who has masters degree", catalog=catalog
+    )
+    assert state.intent == "list"
+    edu = next(f for f in state.filters if f.field == "education")
+    assert edu.op == "in"
+    assert "MBA / MSc" in edu.value
+    assert "MSc Data Science" in edu.value
+    plan = plan_from_query_state(state)
+    assert plan is not None
+    assert set(plan.nodes[-1].params["filters"]["education"]) >= {
+        "MBA / MSc",
+        "MSc Data Science",
+    }
+
+
+def test_extract_exact_msc_data_science() -> None:
+    catalog = default_employee_catalog()
+    state = extract_query_state(
+        "give all employees education is MSc Data Science", catalog=catalog
+    )
+    edu = next(f for f in state.filters if f.field == "education")
+    assert edu.op == "eq"
+    assert edu.value == "MSc Data Science"
+    plan = plan_from_query_state(state)
+    assert plan is not None
+    assert plan.nodes[-1].params["filters"]["education"] == "MSc Data Science"
+
+
 def test_extract_united_states_alias() -> None:
     catalog = default_employee_catalog()
     state = extract_query_state(

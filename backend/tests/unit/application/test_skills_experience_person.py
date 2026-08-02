@@ -4,10 +4,13 @@ from app.application.understanding.experience import extract_experience
 from app.application.understanding.person_skills import extract_person_skills
 from app.application.understanding.plan_from_query_state import (
     _experience_person_plan,
+    _projects_person_plan,
     _skills_person_plan,
 )
+from app.application.understanding.projects import extract_projects
 from app.tools.resume_search.experience import parse_experience
 from app.tools.resume_search.person_skills import parse_skills_list
+from app.tools.resume_search.projects import parse_projects
 
 
 def test_parse_skills_and_experience() -> None:
@@ -54,6 +57,16 @@ def test_parse_strips_enrichment_header() -> None:
     assert parse_experience(summary) is None
 
 
+def test_parse_projects() -> None:
+    text = (
+        "Quinn Martin — Head of Product, Product (Paris, France)\n"
+        "Projects\n"
+        "- Internal platform initiative involving Kubernetes"
+    )
+    assert parse_projects(text) == [
+        "Internal platform initiative involving Kubernetes"
+    ]
+
 
 def test_extract_person_skills() -> None:
     req = extract_person_skills("What skills does Maya Khan have?")
@@ -69,9 +82,18 @@ def test_extract_experience_not_location() -> None:
     assert not extract_experience("Where does Maya Khan live?").matched
 
 
+def test_extract_projects_pronoun() -> None:
+    assert extract_projects("what is her projects?").matched
+    assert extract_projects("give information about her project").matched
+    req = extract_projects("What projects does Quinn Martin have?")
+    assert req.matched and req.person_name == "Quinn Martin"
+
+
 def test_plans_use_resume_purposes() -> None:
     skills = _skills_person_plan(person_name="Maya Khan", skill="Python")
     assert skills.nodes[0].params["purpose"] == "skills_person"
     assert skills.nodes[0].params["skill"] == "Python"
     exp = _experience_person_plan(person_name="Maya Khan")
     assert exp.nodes[0].params["purpose"] == "experience_person"
+    proj = _projects_person_plan(person_name="Quinn Martin")
+    assert proj.nodes[0].params["purpose"] == "projects_person"

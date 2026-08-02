@@ -51,6 +51,7 @@ RESUME_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "certifications_cohort",
                 "skills_person",
                 "experience_person",
+                "projects_person",
                 "status_resolve",
                 "skill",
             ],
@@ -138,8 +139,8 @@ SQL_DESCRIPTION = (
 
 RESUME_SEARCH_DESCRIPTION = (
     "Semantic search over resume text. Use for skills (Python/AWS/…), location "
-    "(city/country), birthday/DOB/age, spoken languages, certifications, and "
-    "resolving people before status writes when needed. "
+    "(city/country), birthday/DOB/age, spoken languages, certifications, "
+    "experience, projects, and resolving people before status writes when needed. "
     "Set purpose appropriately. For skill∩prior-cohort counts, pass employee_ids "
     "from the previous set. DO NOT use for pure SQL headcount by department alone."
 )

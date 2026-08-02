@@ -18,6 +18,7 @@ from app.tools.resume_search import (
     languages,
     location,
     person_skills,
+    projects,
 )
 
 AttributeMode = Literal["person", "cohort", "facet"]
@@ -122,6 +123,15 @@ EXPERIENCE = ResumeAttribute(
     answer_person=experience.build_person_answer,
 )
 
+PROJECTS = ResumeAttribute(
+    name="projects",
+    sections=("Projects",),
+    content_hints=(),
+    extract=projects.parse_projects,
+    facts_from_hits=projects.facts_from_hits,
+    answer_person=projects.build_person_answer,
+)
+
 ATTRIBUTES: dict[str, ResumeAttribute] = {
     BIRTH_DATE.name: BIRTH_DATE,
     LOCATION.name: LOCATION,
@@ -129,6 +139,7 @@ ATTRIBUTES: dict[str, ResumeAttribute] = {
     CERTIFICATIONS.name: CERTIFICATIONS,
     SKILLS.name: SKILLS,
     EXPERIENCE.name: EXPERIENCE,
+    PROJECTS.name: PROJECTS,
 }
 
 # Plan node purposes map onto (attribute, mode) so the tool needs no per-fact branch.
@@ -144,6 +155,7 @@ _PURPOSES: dict[str, tuple[str, AttributeMode]] = {
     "certifications_cohort": (CERTIFICATIONS.name, "cohort"),
     "skills_person": (SKILLS.name, "person"),
     "experience_person": (EXPERIENCE.name, "person"),
+    "projects_person": (PROJECTS.name, "person"),
 }
 
 

@@ -362,6 +362,34 @@ def _experience_person_plan(
     )
 
 
+def _projects_person_plan(
+    *,
+    person_name: str | None,
+    employee_ids: list[str] | None = None,
+) -> ExecutionPlan:
+    """Projects from one person's resume Projects section."""
+    bound_ids = [str(x) for x in (employee_ids or []) if x]
+    if not person_name and not bound_ids:
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question="Whose projects would you like to know?",
+            refusal_code=RefusalCode.AMBIGUOUS.value,
+        )
+    name = person_name or "that employee"
+    params: dict = {
+        "question": name,
+        "purpose": "projects_person",
+        "name": name,
+    }
+    if bound_ids:
+        params["employee_ids"] = bound_ids
+    return ExecutionPlan(
+        nodes=[PlanNode(id="r1", kind="tool", name="resume_search", params=params)],
+        response_strategy="template",
+    )
+
+
 def _birthday_plan(state: QueryState) -> ExecutionPlan:
     """Birth dates exist only in resume text, so answer from retrieval alone."""
     scope = state.birthday_scope or "person"

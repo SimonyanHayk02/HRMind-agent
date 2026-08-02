@@ -257,6 +257,7 @@ def build_person_answer(
     wants_wish: bool = False,
     today: date | None = None,
     note: str | None = None,
+    **_ignored: Any,
 ) -> str:
     """Answer a question about one named person's birthday.
 

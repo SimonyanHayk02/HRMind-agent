@@ -32,6 +32,20 @@ _PERSON_EXP_RE = re.compile(
     r")",
     re.I,
 )
+# Follow-ups after an experience answer: "is that the only one?", "any more?"
+_COMPLETENESS_RE = re.compile(
+    r"\b("
+    r"(?:is\s+)?(?:that|it|this)\s+(?:the\s+)?only\s+(?:one\s+)?"
+    r"(?:experience|experiences|job|role|entry)|"
+    r"only\s+(?:one\s+)?(?:experience|experiences)|"
+    r"(?:any|are\s+there)\s+(?:more|other)\s+experiences?|"
+    r"more\s+experiences?|"
+    r"(?:any|anything)\s+else\b.+\b(?:experience|work|worked)|"
+    r"what\s+else\s+(?:has|have|did)\s+(?:she|he|they|[A-Za-z][A-Za-z\-']+)\s+"
+    r"(?:done|worked|work)"
+    r")\b",
+    re.I,
+)
 _BAD_NAMES = frozenset(
     {
         "who",
@@ -56,6 +70,7 @@ _BAD_NAMES = frozenset(
 class ExperienceRequest:
     matched: bool = False
     person_name: str | None = None
+    completeness_ask: bool = False
 
 
 def _clean_name(raw: str | None) -> str | None:
@@ -80,6 +95,15 @@ def extract_experience(question: str) -> ExperienceRequest:
     ):
         return ExperienceRequest()
 
+    completeness = bool(_COMPLETENESS_RE.search(q))
+    if completeness:
+        named = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", q)
+        return ExperienceRequest(
+            matched=True,
+            person_name=_clean_name(named.group(1)) if named else None,
+            completeness_ask=True,
+        )
+
     m = _PERSON_EXP_RE.search(q)
     if m:
         name = _clean_name(m.group("name") or m.group("name2") or m.group("name3"))
@@ -88,7 +112,6 @@ def extract_experience(question: str) -> ExperienceRequest:
     if _EXPERIENCE_TOPIC_RE.search(q) and (
         _PRONOUN_RE.search(q) or not _COHORT_HINT_RE.search(q)
     ):
-        # Named person elsewhere in the question
         named = re.search(
             r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b",
             q,

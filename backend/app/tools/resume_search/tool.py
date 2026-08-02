@@ -30,7 +30,7 @@ log = structlog.get_logger(__name__)
 # Cosine / lexical floor for generic skill RAG before publishing employee_ids.
 _GENERIC_MIN_SCORE = 0.32
 # Bump when attribute extractors/answers change so Redis cannot serve stale prose.
-_ATTRIBUTE_CACHE_VERSION = "attr-v3"
+_ATTRIBUTE_CACHE_VERSION = "attr-v4"
 
 
 def _score_gate_hits(
@@ -388,6 +388,7 @@ class ResumeSearchTool:
             wants_age=bool(params.get("wants_age")),
             wants_wish=bool(params.get("wants_wish")),
             skill=params.get("skill"),
+            completeness_ask=bool(params.get("completeness_ask")),
             today=today,
             note=resolution.note,
         )
@@ -573,6 +574,7 @@ class ResumeSearchTool:
                 "city",
                 "country",
                 "facet",
+                "completeness_ask",
             )
         )
 

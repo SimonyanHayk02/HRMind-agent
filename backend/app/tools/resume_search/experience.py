@@ -7,10 +7,6 @@ from datetime import date
 from typing import Any
 
 _BULLET_RE = re.compile(r"^\s*[-•\*]\s*(.+)$")
-_AT_RE = re.compile(
-    r"\b(?P<title>.+?)\s+at\s+(?P<company>.+)$",
-    re.I,
-)
 
 
 def _body_lines(text: str) -> list[str]:
@@ -108,6 +104,7 @@ def build_person_answer(
     *,
     name_asked: str,
     note: str | None = None,
+    completeness_ask: bool = False,
     **_ignored: Any,
 ) -> str:
     prefix = f"{note.strip()} " if note and note.strip() else ""
@@ -126,18 +123,25 @@ def build_person_answer(
             "Tell me which one you mean."
         )
     fact = facts[0]
-    # Prefer employer lines when present.
-    employers: list[str] = []
-    for item in fact.items:
-        m = _AT_RE.search(item)
-        if m:
-            employers.append(m.group(0).strip())
-    if employers:
+    items = list(fact.items)
+    listed = "; ".join(items[:8])
+    if completeness_ask:
+        if len(items) <= 1:
+            only = items[0] if items else "nothing"
+            return (
+                prefix
+                + f"Yes — {fact.name}'s resume lists only one experience entry: {only}. "
+                "There are no additional experience items beyond that."
+            )
         return (
             prefix
-            + f"{fact.name}'s resume lists experience at: "
-            + "; ".join(employers)
-            + "."
+            + f"No — {fact.name}'s resume lists {len(items)} experience entries: {listed}. "
+            "That is everything written in the Experience section; "
+            "there are no further experience items beyond these."
         )
-    bullets = "; ".join(fact.items[:6])
-    return prefix + f"{fact.name}'s resume experience includes: {bullets}."
+    if len(items) == 1:
+        return prefix + f"{fact.name}'s resume lists this experience: {items[0]}."
+    return (
+        prefix
+        + f"{fact.name}'s resume lists these experience entries: {listed}."
+    )

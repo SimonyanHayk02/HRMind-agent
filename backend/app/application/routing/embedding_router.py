@@ -46,6 +46,9 @@ _HR_HINTS = re.compile(
     r"where|live|lives|living|located|location|city|cities|country|countries|based|address|"
     r"status|flag|enable|disable|"
     r"birthday|birthdays|birth|born|dob|bday|age|old|"
+    r"experience|experiences|worked|employer|employers|"
+    r"projects?|languages?|certifications?|certificates?|"
+    r"education|degree|"
     r"first|second|third|fourth|fifth|last|former|latter"
     r")\b|"
     r"#\d+",

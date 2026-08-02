@@ -693,6 +693,7 @@ class PlanCompiler:
                 _experience_person_plan(
                     person_name=person_name,
                     employee_ids=person_ids,
+                    completeness_ask=bool(exp_pre.completeness_ask),
                 ),
                 "heuristic_experience",
             )

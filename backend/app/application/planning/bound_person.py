@@ -93,7 +93,11 @@ def bound_person_attribute_plan(
 
     experience_req = extract_experience(q)
     if experience_req.matched:
-        return _experience_person_plan(person_name=name, employee_ids=ids)
+        return _experience_person_plan(
+            person_name=name,
+            employee_ids=ids,
+            completeness_ask=bool(experience_req.completeness_ask),
+        )
 
     projects_req = extract_projects(q)
     if projects_req.matched:

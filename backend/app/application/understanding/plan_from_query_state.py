@@ -338,6 +338,7 @@ def _experience_person_plan(
     *,
     person_name: str | None,
     employee_ids: list[str] | None = None,
+    completeness_ask: bool = False,
 ) -> ExecutionPlan:
     """Work history from one person's resume Experience section."""
     bound_ids = [str(x) for x in (employee_ids or []) if x]
@@ -356,6 +357,8 @@ def _experience_person_plan(
     }
     if bound_ids:
         params["employee_ids"] = bound_ids
+    if completeness_ask:
+        params["completeness_ask"] = True
     return ExecutionPlan(
         nodes=[PlanNode(id="r1", kind="tool", name="resume_search", params=params)],
         response_strategy="template",

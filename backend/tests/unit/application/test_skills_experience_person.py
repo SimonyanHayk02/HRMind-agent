@@ -82,6 +82,50 @@ def test_extract_experience_not_location() -> None:
     assert not extract_experience("Where does Maya Khan live?").matched
 
 
+def test_experience_lists_all_bullets() -> None:
+    from app.tools.resume_search.experience import build_person_answer, ExperienceFact
+
+    fact = ExperienceFact(
+        employee_id="e1",
+        name="Maya Khan",
+        items=[
+            "Product Designer at Acme Corp",
+            "Delivered projects using Python",
+        ],
+    )
+    ans = build_person_answer([fact], name_asked="Maya Khan")
+    assert "Product Designer at Acme Corp" in ans
+    assert "Delivered projects using Python" in ans
+    assert "experience at:" not in ans
+
+    only = build_person_answer(
+        [fact], name_asked="Maya Khan", completeness_ask=True
+    )
+    assert only.startswith("No —")
+    assert "2 experience entries" in only
+    assert "no further experience" in only.lower()
+
+    single = ExperienceFact(
+        employee_id="e1", name="Maya Khan", items=["Product Designer at Acme Corp"]
+    )
+    only_one = build_person_answer(
+        [single], name_asked="Maya Khan", completeness_ask=True
+    )
+    assert only_one.startswith("Yes —")
+    assert "only one experience" in only_one.lower()
+
+
+def test_extract_experience_completeness_followup() -> None:
+    for q in (
+        "is that the only experience?",
+        "is it the only one experience?",
+        "are there more experiences?",
+        "what else has she done?",
+    ):
+        req = extract_experience(q)
+        assert req.matched and req.completeness_ask, q
+
+
 def test_extract_projects_pronoun() -> None:
     assert extract_projects("what is her projects?").matched
     assert extract_projects("give information about her project").matched

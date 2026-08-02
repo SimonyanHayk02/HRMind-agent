@@ -88,7 +88,8 @@ async def test_force_repair_increments_in_development() -> None:
     body = resp.json()
     meta = body.get("meta") or {}
     mode = str(meta.get("planner_mode") or "")
-    # FakeLLM may fall through to heuristics; when tool-select runs, expect a repair.
-    if mode.startswith("tool_select"):
-        assert int(meta.get("repairs") or 0) >= 1 or "repair" in mode
-    assert body.get("degraded") is False
+    # Contract under test: force-repair is honored in development.
+    # Do not require degraded=False — CI has no Postgres, so sql may still
+    # fail after a successful tool-select repair.
+    assert mode.startswith("tool_select"), mode
+    assert int(meta.get("repairs") or 0) >= 1 or "repair" in mode

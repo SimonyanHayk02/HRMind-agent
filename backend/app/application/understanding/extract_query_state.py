@@ -368,26 +368,19 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
             )
         used_fields.add("position")
 
-    # Longer values first so "MSc Data Science" wins over alias "msc".
+    # Prefer exact catalog values over short aliases so "MSc Data Science" does
+    # not collapse to alias "msc" → every education containing "MSc".
     candidates: list[tuple[str, str, str, float]] = []  # field, canonical, matched, conf
     for col in catalog.filterable_columns():
         if col.kind != "enum":
             continue
         if col.name in used_fields:
             continue
-        variants: list[tuple[str, str]] = []
-        for v in col.values:
-            variants.append((v, v))
-        for alias, canon in col.aliases.items():
-            variants.append((alias, canon))
-        variants.sort(key=lambda x: len(x[0]), reverse=True)
-        for raw, canon in variants:
-            if not raw:
-                continue
-            pattern = rf"(?<![a-z0-9]){re.escape(raw.lower())}(?![a-z0-9])"
-            if re.search(pattern, lower):
-                candidates.append((col.name, canon, raw, 0.95))
-                break  # one value per column per utterance for P0
+        matched = _match_enum_variant(lower, col.values, col.aliases)
+        if matched is None:
+            continue
+        raw, canon = matched
+        candidates.append((col.name, canon, raw, 0.95))
 
     for field, canon, raw, conf in candidates:
         if field in used_fields:
@@ -407,6 +400,34 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
                 continue
         found.append(FilterSlot(field=field, op="eq", value=canon, confidence=conf))
     return found
+
+
+def _match_enum_variant(
+    lower: str,
+    values: list[str],
+    aliases: dict[str, str],
+) -> tuple[str, str] | None:
+    """Return (matched_raw, canonical). Catalog values beat aliases."""
+
+    def _hit(raw: str) -> bool:
+        if not raw:
+            return False
+        pattern = rf"(?<![a-z0-9]){re.escape(raw.lower())}(?![a-z0-9])"
+        return bool(re.search(pattern, lower))
+
+    value_variants = sorted(((v, v) for v in values if v), key=lambda x: len(x[0]), reverse=True)
+    for raw, canon in value_variants:
+        if _hit(raw):
+            return raw, canon
+    alias_variants = sorted(
+        ((a, c) for a, c in aliases.items() if a),
+        key=lambda x: len(x[0]),
+        reverse=True,
+    )
+    for raw, canon in alias_variants:
+        if _hit(raw):
+            return raw, canon
+    return None
 
 
 # Degree-level aliases → match every catalog education that is that level.
@@ -437,8 +458,9 @@ def _expand_education_filter(
     for v in values:
         if v.lower() == key:
             return [v]
+    # Only expand degree-level *aliases*, never an exact multi-word value miss.
     pat = _EDU_LEVEL_PATTERNS.get(key)
-    if pat is not None and values:
+    if pat is not None and values and " " not in key:
         matched = [v for v in values if pat.search(v)]
         if matched:
             return matched

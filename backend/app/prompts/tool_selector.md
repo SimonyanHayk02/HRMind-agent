@@ -35,7 +35,11 @@ Rules:
 1. Prefer `intent` + `slots` over raw `selected` when a listed intent fits — the runtime expands intents into safe multi-tool DAGs.
 2. sql = structured employees columns only (department, position, hire_date, education, employment_status, names, salary ACL). NEVER birthday/location/skills/languages/certs.
 3. resume_search = skills, city/country, birthday/DOB/age, languages, certifications.
+   Any question whose answer lives only in the resume (including "her languages",
+   "where does she live", "his certifications", "when was she born") MUST use
+   resume_search — never employee profile as a substitute.
 4. employee = profile/manager/reports/by_name/set_status only.
+   Do NOT answer resume-only attributes with a full profile dump.
 5. If unsure who/what: intent=clarify and set clarify_question; confidence < 0.55.
 6. set_status is a write — confidence must be high (>= 0.75) and status true/false must be known.
    Verbs like "activate"/"enable" ⇒ status=true; "deactivate"/"disable" ⇒ status=false.

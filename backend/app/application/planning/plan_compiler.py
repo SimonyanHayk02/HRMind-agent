@@ -558,6 +558,67 @@ class PlanCompiler:
                 "heuristic_languages",
             )
 
+        # Certifications also live only in resumes.
+        from app.application.understanding.certifications import extract_certification
+        from app.application.understanding.plan_from_query_state import (
+            _certifications_plan as _certs_plan,
+        )
+        from app.domain.query_state import QueryState as _CertQS
+
+        cert_pre = extract_certification(q)
+        if cert_pre.matched:
+            prior_ids = (
+                list(memory.last_employee_ids)
+                if memory and memory.last_employee_ids
+                else []
+            )
+            if len(prior_ids) > 50:
+                prior_ids = []
+            bound_for_cert = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_cert
+                and memory
+                and len(memory.entity_memory) == 1
+                and cert_pre.scope == "person"
+                and not cert_pre.person_name
+            ):
+                bound_for_cert = str(memory.entity_memory[0].employee_id)
+            person_ids: list[str] = []
+            person_name = cert_pre.person_name
+            if cert_pre.scope == "person":
+                if bound_for_cert and not person_name:
+                    person_ids = [bound_for_cert]
+                    person_name = _entity_display_name(memory, bound_for_cert)
+                elif person_name:
+                    person_ids = []
+                elif cert_pre.refers_to_prior and prior_ids:
+                    person_ids = list(prior_ids)
+                elif not person_name and not person_ids:
+                    return (
+                        ExecutionPlan(
+                            nodes=[],
+                            response_strategy="template",
+                            clarify_question="Whose certifications would you like to know?",
+                            refusal_code=RefusalCode.AMBIGUOUS.value,
+                        ),
+                        "heuristic_certifications",
+                    )
+            elif cert_pre.refers_to_prior and prior_ids:
+                person_ids = list(prior_ids)
+            return (
+                _certs_plan(
+                    _CertQS(
+                        intent="certifications",
+                        certification=cert_pre.certification,
+                        person_name=person_name,
+                        person_employee_ids=person_ids,
+                        refers_to_prior=bool(person_ids) or cert_pre.refers_to_prior,
+                        confidence=0.95,
+                    )
+                ),
+                "heuristic_certifications",
+            )
+
         pronoun_id = _resolve_pronoun_employee_id(q, memory)
         if _PRONOUN_ONLY_RE.search(q) and wants_person_lookup(q):
             # Bare pronoun person questions — never treat "she"/"he" as a name.

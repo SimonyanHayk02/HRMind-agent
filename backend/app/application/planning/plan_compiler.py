@@ -278,7 +278,8 @@ class PlanCompiler:
                 )
                 and not re.search(
                     r"\b(languages?|speaks?|spoken|fluent|certifications?|"
-                    r"certificates?|licen[cs]e|birthday|born|date of birth|\bdob\b)\b",
+                    r"certificates?|licen[cs]e|birthday|born|date of birth|\bdob\b|"
+                    r"skills?|experience|worked)\b",
                     q,
                     re.I,
                 )
@@ -617,6 +618,83 @@ class PlanCompiler:
                     )
                 ),
                 "heuristic_certifications",
+            )
+
+        # Person skills / "does she know Python?" — Skills section, not cohort skill RAG.
+        from app.application.understanding.person_skills import extract_person_skills
+        from app.application.understanding.plan_from_query_state import (
+            _skills_person_plan,
+        )
+
+        skills_pre = extract_person_skills(q)
+        if skills_pre.matched:
+            bound_for_skill = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_skill
+                and memory
+                and len(memory.entity_memory) == 1
+                and not skills_pre.person_name
+            ):
+                bound_for_skill = str(memory.entity_memory[0].employee_id)
+            person_ids = [bound_for_skill] if bound_for_skill else []
+            person_name = skills_pre.person_name
+            if bound_for_skill and not person_name:
+                person_name = _entity_display_name(memory, bound_for_skill)
+            if not person_name and not person_ids:
+                return (
+                    ExecutionPlan(
+                        nodes=[],
+                        response_strategy="template",
+                        clarify_question="Whose skills would you like to know?",
+                        refusal_code=RefusalCode.AMBIGUOUS.value,
+                    ),
+                    "heuristic_skills_person",
+                )
+            return (
+                _skills_person_plan(
+                    person_name=person_name,
+                    employee_ids=person_ids,
+                    skill=skills_pre.skill,
+                ),
+                "heuristic_skills_person",
+            )
+
+        # Work experience ("where has X worked?") — before location steals "where".
+        from app.application.understanding.experience import extract_experience
+        from app.application.understanding.plan_from_query_state import (
+            _experience_person_plan,
+        )
+
+        exp_pre = extract_experience(q)
+        if exp_pre.matched:
+            bound_for_exp = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_exp
+                and memory
+                and len(memory.entity_memory) == 1
+                and not exp_pre.person_name
+            ):
+                bound_for_exp = str(memory.entity_memory[0].employee_id)
+            person_ids = [bound_for_exp] if bound_for_exp else []
+            person_name = exp_pre.person_name
+            if bound_for_exp and not person_name:
+                person_name = _entity_display_name(memory, bound_for_exp)
+            if not person_name and not person_ids:
+                return (
+                    ExecutionPlan(
+                        nodes=[],
+                        response_strategy="template",
+                        clarify_question="Whose work experience would you like to know?",
+                        refusal_code=RefusalCode.AMBIGUOUS.value,
+                    ),
+                    "heuristic_experience",
+                )
+            return (
+                _experience_person_plan(
+                    person_name=person_name,
+                    employee_ids=person_ids,
+                ),
+                "heuristic_experience",
             )
 
         pronoun_id = _resolve_pronoun_employee_id(q, memory)

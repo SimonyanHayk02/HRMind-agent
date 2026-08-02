@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+from app.application.understanding.experience import extract_experience
+from app.application.understanding.person_skills import extract_person_skills
+from app.application.understanding.plan_from_query_state import (
+    _experience_person_plan,
+    _skills_person_plan,
+)
+from app.tools.resume_search.experience import parse_experience
+from app.tools.resume_search.person_skills import parse_skills_list
+
+
+def test_parse_skills_and_experience() -> None:
+    assert parse_skills_list("Python, Communication, Collaboration") == [
+        "Python",
+        "Communication",
+        "Collaboration",
+    ]
+    assert parse_experience(
+        "- Product Designer at Acme Corp\n- Delivered projects using Python"
+    ) == [
+        "Product Designer at Acme Corp",
+        "Delivered projects using Python",
+    ]
+
+
+def test_parse_strips_enrichment_header() -> None:
+    skills = (
+        "Maya Khan — Product Designer, Product (Dubai, UAE)\n"
+        "Skills\n"
+        "Python, Communication, Collaboration"
+    )
+    assert parse_skills_list(skills) == [
+        "Python",
+        "Communication",
+        "Collaboration",
+    ]
+    experience = (
+        "Maya Khan — Product Designer, Product (Dubai, UAE)\n"
+        "Experience\n"
+        "- Product Designer at Acme Corp\n"
+        "- Delivered projects using Python"
+    )
+    assert parse_experience(experience) == [
+        "Product Designer at Acme Corp",
+        "Delivered projects using Python",
+    ]
+    # Summary bleed must not become "experience".
+    summary = (
+        "Maya Khan — Product Designer, Product (Dubai, UAE)\n"
+        "Summary\n"
+        "Experienced Product Designer in Product based in Dubai, UAE."
+    )
+    assert parse_experience(summary) is None
+
+
+
+def test_extract_person_skills() -> None:
+    req = extract_person_skills("What skills does Maya Khan have?")
+    assert req.matched and req.person_name == "Maya Khan" and req.skill is None
+    req = extract_person_skills("Does Maya Khan know Python?")
+    assert req.matched and req.person_name == "Maya Khan" and req.skill == "Python"
+    assert not extract_person_skills("Who knows Python?").matched
+
+
+def test_extract_experience_not_location() -> None:
+    req = extract_experience("Where has Maya Khan worked?")
+    assert req.matched and req.person_name == "Maya Khan"
+    assert not extract_experience("Where does Maya Khan live?").matched
+
+
+def test_plans_use_resume_purposes() -> None:
+    skills = _skills_person_plan(person_name="Maya Khan", skill="Python")
+    assert skills.nodes[0].params["purpose"] == "skills_person"
+    assert skills.nodes[0].params["skill"] == "Python"
+    exp = _experience_person_plan(person_name="Maya Khan")
+    assert exp.nodes[0].params["purpose"] == "experience_person"

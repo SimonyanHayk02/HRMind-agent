@@ -31,6 +31,8 @@ _ALLOWED_RESUME_PURPOSES = frozenset(
         "languages_cohort",
         "certifications_person",
         "certifications_cohort",
+        "skills_person",
+        "experience_person",
         "status_resolve",
         "skill",
     }

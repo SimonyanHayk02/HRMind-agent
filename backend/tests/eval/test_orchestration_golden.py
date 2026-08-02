@@ -77,7 +77,7 @@ def _check_case(case: dict) -> None:
         compiler = PlanCompiler(llm=None, tools=ToolRegistry())
 
         async def _run() -> None:
-            plan, mode = await compiler.compile(
+            plan, mode, _meta = await compiler.compile(
                 q,
                 auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
                 memory=_two_entity_memory(),

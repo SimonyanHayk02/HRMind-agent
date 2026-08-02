@@ -168,7 +168,7 @@ def test_ordinal_birthday_after_list_uses_resume_search() -> None:
     compiler = PlanCompiler(llm=None, tools=ToolRegistry())
 
     async def _run() -> None:
-        plan, mode = await compiler.compile(
+        plan, mode, _meta = await compiler.compile(
             "give me the first persons date of birth",
             auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
             memory=mem,

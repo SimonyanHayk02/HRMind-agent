@@ -139,8 +139,10 @@ class ResponseFormatter:
                     if not p["rows"] and count_asked:
                         return "The answer is 0.", confidence, sources, None
                     if not p["rows"]:
+                        from app.application.response.refusal import empty_refine_answer
+
                         return (
-                            "None of the previous set match that criteria.",
+                            empty_refine_answer(question),
                             confidence,
                             sources,
                             None,
@@ -174,8 +176,10 @@ class ResponseFormatter:
             if isinstance(last, list) and last and all(isinstance(x, str) for x in last):
                 return f"Found {len(last)} matching employees.", confidence, sources, None
             if isinstance(last, list) and not last:
+                from app.application.response.refusal import empty_refine_answer
+
                 return (
-                    "None of the previous set match that criteria.",
+                    empty_refine_answer(question),
                     confidence,
                     sources,
                     None,
@@ -262,7 +266,9 @@ def _format_empty_tool_results(
                 continue
             if n == 0:
                 if prior_filter and not count_asked:
-                    return "None of the previous set match that criteria."
+                    from app.application.response.refusal import empty_refine_answer
+
+                    return empty_refine_answer(question)
                 return "The answer is 0."
         if (
             isinstance(p, dict)
@@ -275,7 +281,9 @@ def _format_empty_tool_results(
             if count_asked:
                 return "The answer is 0."
             if prior_filter:
-                return "None of the previous set match that criteria."
+                from app.application.response.refusal import empty_refine_answer
+
+                return empty_refine_answer(question)
             return "I couldn't find matching employees for that."
         if isinstance(p, dict) and p.get("employees") == []:
             return (
@@ -285,7 +293,9 @@ def _format_empty_tool_results(
             if count_asked:
                 return "The answer is 0."
             if prior_filter:
-                return "None of the previous set match that criteria."
+                from app.application.response.refusal import empty_refine_answer
+
+                return empty_refine_answer(question)
     return None
 
 
@@ -711,6 +721,9 @@ def _order_rows_by_plan_ids(rows: list[Any], plan: ExecutionPlan) -> list[Any]:
 
 def _format_employee_rows(rows: list[Any]) -> str | None:
     names: list[str] = []
+    show_status = any(
+        isinstance(r, dict) and ("status" in r or "employment_status" in r) for r in rows
+    )
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -722,10 +735,26 @@ def _format_employee_rows(rows: list[Any]) -> str | None:
         dept = str(row.get("department") or "").strip()
         pos = str(row.get("position") or "").strip()
         extra = ", ".join(x for x in (pos, dept) if x)
-        names.append(f"{full} ({extra})" if extra else full)
+        line = f"{full} ({extra})" if extra else full
+        if show_status:
+            bits: list[str] = []
+            if "status" in row:
+                flag = row.get("status")
+                if isinstance(flag, bool):
+                    bits.append(f"status={'active' if flag else 'inactive'}")
+                elif flag is not None:
+                    bits.append(f"status={flag}")
+            emp = row.get("employment_status")
+            if emp is not None and str(emp).strip():
+                bits.append(f"employment_status={emp}")
+            if bits:
+                line = f"{line} — {', '.join(bits)}"
+        names.append(line)
     if not names:
         return None
     if len(names) == 1:
         return f"The matching employee is {names[0]}."
     bullet = "\n".join(f"- {n}" for n in names)
+    if show_status:
+        return f"Here are the statuses for {len(names)} employees:\n{bullet}"
     return f"Here are the {len(names)} matching employees:\n{bullet}"

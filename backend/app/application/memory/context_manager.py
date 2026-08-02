@@ -299,6 +299,7 @@ class ContextManager:
                 # the pre-intersect location dump and not the previous person.
                 session = await self._memory.set_last_employee_ids(session, [])
                 session = await self._memory.set_active_referent(session, None)
+                session = await self._memory.set_last_listed(session, [])
             # Soft greeting plans intentionally do not clear the cohort.
 
         # Bound person-attribute turns (ordinal DOB, location, profile) must not

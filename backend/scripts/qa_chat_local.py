@@ -10,12 +10,13 @@ a running API.
 
 Usage:
   source .venv/bin/activate
-  python scripts/qa_chat_local.py                 # basic + hard + utterances + orch
+  python scripts/qa_chat_local.py                 # basic + hard + utterances + orch + production
   python scripts/qa_chat_local.py --suite basic
   python scripts/qa_chat_local.py --suite hard    # adversarial + list/NLU
   python scripts/qa_chat_local.py --suite utterances  # natural paraphrases only
   python scripts/qa_chat_local.py --suite orchestrator  # Wave A–D contracts
-  python scripts/qa_chat_local.py --only OR_,U_,AG_,ST_,UQ_,NS_,LR_
+  python scripts/qa_chat_local.py --suite production --require-meta  # architecture gate
+  python scripts/qa_chat_local.py --only OR_,U_,AG_,ST_,UQ_,NS_,LR_,PR_
 """
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ HEADERS = {
     "Accept": "application/json",
     "X-User-Id": os.environ.get("HRMIND_QA_USER", "local-qa"),
     "X-Role": os.environ.get("HRMIND_QA_ROLE", "recruiter"),
+    "X-HRMind-Debug": "1",
 }
 if os.environ.get("HRMIND_QA_TENANT"):
     HEADERS["X-Tenant-Id"] = os.environ["HRMIND_QA_TENANT"]
@@ -59,6 +61,8 @@ class TurnResult:
     error: str | None = None
     ms: int = 0
     tools_hint: str = ""
+    tool: str | None = None
+    meta: dict[str, Any] | None = None
 
 
 @dataclass
@@ -70,6 +74,7 @@ class Scenario:
     results: list[TurnResult] = field(default_factory=list)
     session_id: str | None = None
     role: str | None = None  # optional X-Role override for this scenario
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
 
 def health_check(base: str, timeout: float = 5.0) -> dict[str, Any]:
@@ -85,6 +90,7 @@ def chat(
     *,
     timeout: float = 120.0,
     role: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"question": question}
     if session_id:
@@ -92,6 +98,8 @@ def chat(
     headers = dict(HEADERS)
     if role:
         headers["X-Role"] = role
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
         f"{base}/v1/chat",
         data=json.dumps(body).encode(),
@@ -219,6 +227,32 @@ def expect_has_names(a: str, _r: dict) -> tuple[bool, str]:
     has_name = contains_any(a, *candidates)
     ok = has_name and not refused
     return ok, "employee names" if ok else f"refused={refused}: {a[:180]}"
+
+
+def expect_empty_cohort_no_names(a: str, r: dict) -> tuple[bool, str]:
+    """Zero-refine list follow-up: refuse/clarify, never a name roster."""
+    clarify = (r.get("clarify") or "") + " " + a
+    has_roster = bool(re.search(r"\n-\s+\w+", a or "")) or contains_any(
+        a, "matching employees", "here are the"
+    )
+    ok = (
+        not has_roster
+        and contains_any(
+            clarify,
+            "previous",
+            "no names",
+            "none of",
+            "match that criteria",
+            "ask a new search",
+        )
+    )
+    return ok, "empty cohort list" if ok else f"got: {a[:180]}"
+
+
+def expect_zero_or_small_count(a: str, _r: dict) -> tuple[bool, str]:
+    n = first_int(a)
+    ok = n is not None and 0 <= n < 50
+    return ok, f"count={n}" if ok else f"got: {a[:120]}"
 
 
 def expect_skill_or_rag(a: str, r: dict) -> tuple[bool, str]:
@@ -476,12 +510,169 @@ def expect_status_location_cohort(a: str, _r: dict) -> tuple[bool, str]:
 
 
 def expect_status_confirm_gate_only(a: str, _r: dict) -> tuple[bool, str]:
-    """First turn of a location status write must ask to confirm (no commit yet)."""
+    """First turn of a status write must ask to confirm (no commit yet)."""
     clarify = ((_r.get("clarify") or "") + " " + a).lower()
-    ok = contains_any(clarify, "confirm status update") and not contains_any(
-        a, "updated", "internal_error", "traceback"
-    )
+    ok = contains_any(
+        clarify, "confirm status update", "reply yes to confirm"
+    ) and not contains_any(a, "updated", "internal_error", "traceback")
     return ok, "confirm gate" if ok else f"got: {a[:200]}"
+
+
+def all_of(*checkers: Checker) -> Checker:
+    def _check(a: str, r: dict) -> tuple[bool, str]:
+        notes: list[str] = []
+        for checker in checkers:
+            ok, note = checker(a, r)
+            notes.append(note)
+            if not ok:
+                return False, note
+        return True, "; ".join(notes)
+
+    return _check
+
+
+def _meta(r: dict) -> dict[str, Any]:
+    m = r.get("meta")
+    return m if isinstance(m, dict) else {}
+
+
+def _answered_tools(r: dict) -> set[str]:
+    raw = r.get("tool") or _meta(r).get("tools_answered") or ""
+    parts: set[str] = set()
+    for chunk in str(raw).replace(",", "+").split("+"):
+        name = chunk.strip().lower()
+        if name:
+            parts.add(name)
+    for node in _meta(r).get("plan_nodes") or []:
+        if isinstance(node, str) and node.strip():
+            parts.add(node.strip().lower())
+    return parts
+
+
+def expect_tool(*names: str) -> Checker:
+    need = {n.lower() for n in names}
+
+    def _check(a: str, r: dict) -> tuple[bool, str]:
+        got = _answered_tools(r)
+        ok = need.issubset(got)
+        return (
+            ok,
+            f"tools={sorted(got)}" if ok else f"need {sorted(need)} got {sorted(got)}: {a[:120]}",
+        )
+
+    return _check
+
+
+def expect_planner_mode(*prefixes: str) -> Checker:
+    def _check(a: str, r: dict) -> tuple[bool, str]:
+        mode = str(_meta(r).get("planner_mode") or "")
+        ok = any(mode.startswith(p) for p in prefixes)
+        return ok, f"mode={mode}" if ok else f"mode={mode!r} not in {prefixes}: {a[:100]}"
+
+    return _check
+
+
+def expect_not_degraded(a: str, r: dict) -> tuple[bool, str]:
+    ok = not bool(r.get("degraded"))
+    return ok, "not-degraded" if ok else f"degraded: {a[:160]}"
+
+
+def expect_hitl_gate(a: str, r: dict) -> tuple[bool, str]:
+    ok_gate, note = expect_status_confirm_gate_only(a, r)
+    if not ok_gate:
+        return False, note
+    meta = _meta(r)
+    needs_hitl = bool(meta.get("needs_hitl"))
+    nodes = meta.get("plan_nodes") or []
+    mode = str(meta.get("planner_mode") or "")
+    structural = needs_hitl or not nodes or "hitl" in mode
+    ok = structural and not contains_any(a, "updated")
+    return ok, "hitl gate" if ok else f"gate text ok but meta weak: {meta}"
+
+
+def expect_status_committed(a: str, r: dict) -> tuple[bool, str]:
+    ok, note = expect_status_true(a, r)
+    if not ok:
+        return False, note
+    meta = _meta(r)
+    if meta.get("needs_hitl"):
+        return False, f"still needs_hitl after confirm: {meta}"
+    return True, "status committed"
+
+
+def expect_repair_used(a: str, r: dict) -> tuple[bool, str]:
+    repairs = int(_meta(r).get("repairs") or 0)
+    mode = str(_meta(r).get("planner_mode") or "")
+    ok = repairs >= 1 or "repair" in mode
+    return ok, f"repairs={repairs} mode={mode}" if ok else f"no repair: {mode}"
+
+
+def expect_multi_tool(a: str, r: dict) -> tuple[bool, str]:
+    tool = str(r.get("tool") or _meta(r).get("tools_answered") or "")
+    nodes = [
+        str(n).lower()
+        for n in (_meta(r).get("plan_nodes") or [])
+        if isinstance(n, str)
+    ]
+    distinct = {n for n in nodes if n and n not in {"intersect", "count", "filter", "sort"}}
+    tool_parts = {p.strip() for p in tool.replace(",", "+").split("+") if p.strip()}
+    ok = len(distinct) >= 2 or len(tool_parts) >= 2 or "+" in tool
+    return (
+        ok,
+        f"multi-tool nodes={nodes} tool={tool}"
+        if ok
+        else f"single-tool nodes={nodes} tool={tool}: {a[:120]}",
+    )
+
+
+def expect_confidence_band(lo: float, hi: float) -> Checker:
+    def _check(a: str, r: dict) -> tuple[bool, str]:
+        conf = r.get("confidence")
+        if conf is None:
+            conf = _meta(r).get("select_confidence")
+        try:
+            value = float(conf)
+        except (TypeError, ValueError):
+            return False, f"no confidence: {a[:120]}"
+        ok = lo <= value <= hi
+        return ok, f"confidence={value}" if ok else f"confidence={value} not in [{lo},{hi}]"
+
+    return _check
+
+
+def expect_exact_count(n: int) -> Checker:
+    def _check(a: str, _r: dict) -> tuple[bool, str]:
+        got = first_int(a)
+        ok = got == n and not_contains(a, "internal_error", "traceback")
+        return ok, f"n={got}" if ok else f"want {n} got {got}: {a[:160]}"
+
+    return _check
+
+
+def expect_names_only(*names: str) -> Checker:
+    want = [n.lower() for n in names]
+
+    def _check(a: str, _r: dict) -> tuple[bool, str]:
+        lower = a.lower()
+        hits = [n for n in want if n in lower]
+        if len(hits) < len(want):
+            return False, f"missing names {want}: {a[:180]}"
+        # Reject large unrelated dumps: at most a few extra first names from seed.
+        return True, f"names={hits}"
+
+    return _check
+
+
+def expect_no_status_write(a: str, r: dict) -> tuple[bool, str]:
+    if contains_any(a, "updated", "status to true", "status to false"):
+        return False, f"unexpected write: {a[:160]}"
+    tools = _answered_tools(r)
+    if "employee" in tools and "set_status" in str(_meta(r)).lower():
+        return False, f"set_status path: {_meta(r)}"
+    mode = str(_meta(r).get("planner_mode") or "")
+    if "set_status" in mode or "confirm_status" in mode:
+        return False, f"status write mode: {mode}"
+    return True, "read-only statuses"
 
 
 def expect_language_cohort(a: str, _r: dict) -> tuple[bool, str]:
@@ -962,15 +1153,43 @@ def expect_ordinal_needs_names(a: str, _r: dict) -> tuple[bool, str]:
     return ok, "needs names" if ok else f"got: {a[:180]}"
 
 
-def run_scenario(base: str, sc: Scenario) -> Scenario:
+def run_scenario(
+    base: str,
+    sc: Scenario,
+    *,
+    require_meta: bool = False,
+) -> Scenario:
     sid = None
     for q, checker in sc.turns:
         try:
-            data = chat(base, q, sid, role=sc.role)
+            data = chat(
+                base,
+                q,
+                sid,
+                role=sc.role,
+                extra_headers=sc.extra_headers or None,
+            )
             sid = data.get("session_id") or sid
             answer = data.get("answer") or ""
             sources = data.get("sources") or []
+            meta = data.get("meta") if isinstance(data.get("meta"), dict) else None
+            tool = data.get("tool")
             ok, note = checker(answer, data)
+            if require_meta and not meta:
+                ok = False
+                note = f"missing meta ({note})"
+            # Soft contract: scenario tool hints must intersect answered tools.
+            hint = {t.lower() for t in sc.tools if t}
+            answered = _answered_tools(data)
+            if (
+                ok
+                and hint
+                and answered
+                and not (hint & answered)
+                and not data.get("clarify")
+            ):
+                ok = False
+                note = f"tools disjoint hint={sorted(hint)} got={sorted(answered)}; {note}"
             sc.results.append(
                 TurnResult(
                     question=q,
@@ -984,6 +1203,8 @@ def run_scenario(base: str, sc: Scenario) -> Scenario:
                     note=note,
                     ms=int(data.get("_ms") or 0),
                     tools_hint=",".join(sc.tools),
+                    tool=tool if isinstance(tool, str) else None,
+                    meta=meta,
                 )
             )
         except urllib.error.HTTPError as exc:
@@ -1054,7 +1275,7 @@ def build_hard_scenarios() -> list[Scenario]:
         Scenario(
             "W_facet_then_cohort_switch",
             "Hard: country facet 'names please' then Eng list — focus must not stick wrongly",
-            ["sql"],
+            ["resume_search", "sql"],
             [
                 ("in how different countries do we have employees?", expect_facet_small_count),
                 ("names please", expect_country_names),
@@ -1140,7 +1361,7 @@ def build_hard_scenarios() -> list[Scenario]:
         Scenario(
             "AE_ambiguous_person_then_disambiguate_path",
             "Hard: ambiguous Ivy → ask manager of Alice (must stay coherent, no crash)",
-            ["employee"],
+            ["employee", "resume_search"],
             [
                 ("Tell me about Alice Nguyen", expect_about_person),
                 ("Who is the manager of Alice Nguyen?", expect_managerish),
@@ -1408,6 +1629,405 @@ def build_orchestrator_scenarios() -> list[Scenario]:
     ]
 
 
+def build_production_scenarios() -> list[Scenario]:
+    """Production architecture gate: multi-tool, HITL, guards, ReAct, long session."""
+    eng_capture, eng_lte = make_monotonic_count_checkers()
+    listed_names: list[str] = []
+
+    def capture_eng_names(a: str, r: dict) -> tuple[bool, str]:
+        ok, note = expect_has_names(a, r)
+        if ok:
+            listed_names.clear()
+            for token in re.findall(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?", a):
+                listed_names.append(token)
+        return ok, note
+
+    def expect_sales_not_eng_leak(a: str, r: dict) -> tuple[bool, str]:
+        ok, note = expect_has_names(a, r)
+        if not ok:
+            return False, note
+        lower = a.lower()
+        # After topic shift to Sales, prior Engineering cohort names should not dominate.
+        eng_hits = sum(1 for n in listed_names if n and n.lower() in lower)
+        if listed_names and eng_hits >= max(3, len(listed_names) // 2 + 1):
+            return False, f"eng cohort leaked into Sales list: {a[:180]}"
+        return True, "topic-shift Sales list"
+
+    return [
+        # --- A. Multi-tool / DAG ---
+        Scenario(
+            "PR_skill_place_intersect",
+            "Org count → Dubai+Kubernetes count → names (Diego/Hugo)",
+            ["resume_search", "sql"],
+            [
+                ("How many employees do we have?", expect_positive_count),
+                (
+                    "How many employees know Kubernetes and are in Dubai?",
+                    all_of(expect_exact_count(2), expect_multi_tool, expect_not_degraded),
+                ),
+                (
+                    "list their names",
+                    all_of(
+                        expect_names_only("diego", "hugo"),
+                        expect_not_degraded,
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_reports_skill_place",
+            "Alice team ∩ K8s ∩ Dubai multi-tool composition",
+            ["employee", "resume_search", "sql"],
+            [
+                (
+                    "who on Alice Nguyen's team knows Kubernetes and is in Dubai?",
+                    all_of(expect_composition_or_empty, expect_multi_tool),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_dept_then_skill_then_place",
+            "Eng → Python → Berlin refine; zero place ∩ clears names follow-up",
+            ["sql", "resume_search", "clarify"],
+            [
+                ("How many employees work in Engineering?", eng_capture),
+                (
+                    "how many of them know Python?",
+                    all_of(eng_lte, expect_multi_tool),
+                ),
+                (
+                    "and how many of those are in Berlin?",
+                    all_of(expect_followup_count, expect_multi_tool),
+                ),
+                (
+                    "list their names",
+                    all_of(
+                        expect_empty_cohort_no_names,
+                        expect_planner_mode("guard_empty_cohort_list"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_facet_then_cohort",
+            "Cities facet guard → names → Eng list → Berlin of them (not org-wide)",
+            ["sql", "resume_search"],
+            [
+                (
+                    "in how different cities do we have employees?",
+                    all_of(
+                        expect_facet_small_count,
+                        expect_planner_mode("guard_facet"),
+                    ),
+                ),
+                ("names please", expect_city_names),
+                ("List employees in Engineering", capture_eng_names),
+                ("how many of them in Berlin?", expect_not_org_wide_100),
+            ],
+        ),
+        # --- B. HITL / status ---
+        Scenario(
+            "PR_hitl_activate_yes",
+            "Activate Carol → HITL gate → yes commits Carol (not prior focus)",
+            ["employee", "clarify"],
+            [
+                ("Tell me about Alice Nguyen", expect_about_person),
+                (
+                    "activate Carol Garcia",
+                    all_of(
+                        expect_hitl_gate,
+                        expect_planner_mode("tool_select_hitl", "heuristic"),
+                    ),
+                ),
+                (
+                    "yes",
+                    all_of(
+                        expect_status_committed,
+                        expect_names_only("carol"),
+                        expect_planner_mode(
+                            "heuristic_confirm_status",
+                            "tool_select",
+                            "heuristic",
+                        ),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_hitl_activate_cancel",
+            "Activate → cancel clears pending; no write; next activate still gated",
+            ["employee", "clarify"],
+            [
+                ("activate Carol Garcia", expect_hitl_gate),
+                (
+                    "no wait cancel",
+                    all_of(expect_no_status_write, expect_planner_mode("heuristic_cancel_status")),
+                ),
+                ("activate Carol Garcia", expect_hitl_gate),
+            ],
+        ),
+        Scenario(
+            "PR_alice_nguyen_not_bauer",
+            "Exact Alice Nguyen profile after Alice Bauer focus",
+            ["employee", "resume_search"],
+            [
+                ("Tell me about Alice Bauer", expect_about_person),
+                (
+                    "Tell me about Alice Nguyen",
+                    all_of(
+                        expect_about_person,
+                        expect_names_only("nguyen"),
+                        expect_planner_mode("guard_about_person", "query_state", "heuristic"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_org_people_total",
+            "Org paraphrase how many people in total → org-wide, not dept 17",
+            ["sql"],
+            [
+                (
+                    "quick — how many people do we have in total?",
+                    all_of(
+                        expect_count_between(50, 200),
+                        expect_planner_mode("guard_org_headcount", "tool_select"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_hitl_activate_no_commit_without_yes",
+            "Activate then topic-shift must not write; next status still gated",
+            ["employee", "sql", "clarify"],
+            [
+                ("activate Carol Garcia", expect_hitl_gate),
+                (
+                    "how many engineers?",
+                    all_of(expect_positive_count, expect_no_status_write),
+                ),
+                ("activate Carol Garcia", expect_hitl_gate),
+            ],
+        ),
+        Scenario(
+            "PR_status_list_not_write",
+            "Names cohort → statuses of them is a read, not set_status",
+            ["sql", "employee"],
+            [
+                ("List employees in Engineering", expect_has_names),
+                (
+                    "what are the statuses of them?",
+                    all_of(expect_hr_answer_not_greeting, expect_no_status_write),
+                ),
+            ],
+        ),
+        # --- C. ReAct repair (forced) ---
+        Scenario(
+            "PR_react_force_repair",
+            "Force first selector attempt to repair; answer still correct",
+            ["sql"],
+            [
+                (
+                    "How many employees do we have?",
+                    all_of(
+                        expect_positive_count,
+                        expect_repair_used,
+                        expect_not_degraded,
+                        expect_planner_mode("tool_select"),
+                    ),
+                ),
+            ],
+            extra_headers={"X-HRMind-Force-Repair": "1"},
+        ),
+        # --- D. Guards beat LLM ---
+        Scenario(
+            "PR_guard_facet_cities",
+            "City facet uses guard_facet",
+            ["resume_search", "sql"],
+            [
+                (
+                    "in how different cities do we have employees?",
+                    all_of(
+                        expect_facet_small_count,
+                        expect_planner_mode("guard_facet"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_guard_facet_countries",
+            "Country facet uses guard_facet",
+            ["resume_search", "sql"],
+            [
+                (
+                    "in how different countries do we have employees?",
+                    all_of(expect_positive_count, expect_planner_mode("guard_facet")),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_guard_unknown_place",
+            "Atlantis → guard_unknown_place",
+            ["clarify", "resume_search"],
+            [
+                (
+                    "List employees in Atlantis",
+                    all_of(
+                        expect_unknown_place_clarify,
+                        expect_planner_mode("guard_unknown_place"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_guard_empty_anaphora",
+            "Bare of them? → guard_empty_anaphora",
+            ["clarify"],
+            [
+                (
+                    "of them?",
+                    all_of(expect_clarify, expect_planner_mode("guard_empty_anaphora")),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_empty_cohort_list_after_zero_refine",
+            "Eng → skill → Berlin=0 → list names must not resurrect a roster",
+            ["sql", "resume_search", "clarify"],
+            [
+                ("How many employees work in Engineering?", expect_positive_count),
+                ("how many of them know Python?", expect_followup_count),
+                ("how many of them are in Berlin?", expect_zero_or_small_count),
+                (
+                    "list their names please",
+                    all_of(
+                        expect_empty_cohort_no_names,
+                        expect_planner_mode("guard_empty_cohort_list"),
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_guard_tenure",
+            "Avg tenure / most senior → guard_tenure",
+            ["sql"],
+            [
+                (
+                    "what is the average tenure in Engineering?",
+                    all_of(expect_tenure_answer, expect_planner_mode("guard_tenure")),
+                ),
+                (
+                    "who is the most senior in Engineering?",
+                    all_of(expect_tenure_answer, expect_planner_mode("guard_tenure")),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_guard_hire_window",
+            "Joined last 90 days → guard_hire_window",
+            ["sql"],
+            [
+                (
+                    "who joined in the last 90 days?",
+                    all_of(expect_hire_window, expect_planner_mode("guard_hire_window")),
+                ),
+            ],
+        ),
+        # --- F. Confidence / clarify ---
+        Scenario(
+            "PR_vague_clarify",
+            "Underspecified update status → clarify; no write",
+            ["clarify", "employee"],
+            [
+                (
+                    "update status",
+                    all_of(
+                        expect_clarify,
+                        expect_no_status_write,
+                        expect_not_degraded,
+                    ),
+                ),
+            ],
+        ),
+        Scenario(
+            "PR_employee_salary_acl",
+            "Employee role soft-refuses salary mid architecture pack",
+            ["clarify"],
+            [("what's Alice Nguyen's salary?", expect_unauthorized)],
+            role="employee",
+        ),
+        # --- E. Long conversation ---
+        Scenario(
+            "PR_long_session_25",
+            "≥25-turn mixed tools: memory, HITL, topic shift, clear",
+            [
+                "greeting",
+                "sql",
+                "resume_search",
+                "employee",
+                "clarify",
+            ],
+            [
+                ("hello", expect_greeting),
+                ("How many employees do we have?", expect_positive_count),
+                ("How many employees work in Engineering?", expect_positive_count),
+                ("how many of them know Python?", expect_followup_count),
+                ("list their names", expect_has_names),
+                (
+                    "and how many of those are in Dubai?",
+                    all_of(expect_followup_count, expect_multi_tool),
+                ),
+                (
+                    "list their names please",
+                    all_of(
+                        expect_empty_cohort_no_names,
+                        expect_planner_mode("guard_empty_cohort_list"),
+                    ),
+                ),
+                ("who knows Python?", expect_skill_or_rag),
+                ("list their names", capture_eng_names),
+                ("give me the first persons date of birth", expect_birthday_from_resume),
+                ("where does the second person live?", expect_person_location),
+                (
+                    "what are the statuses of them?",
+                    all_of(expect_hr_answer_not_greeting, expect_no_status_write),
+                ),
+                ("activate Carol Garcia", expect_hitl_gate),
+                ("yes", expect_status_committed),
+                (
+                    "in how different countries do we have employees?",
+                    expect_planner_mode("guard_facet"),
+                ),
+                ("names please", expect_country_names),
+                ("List employees in Sales", expect_sales_not_eng_leak),
+                ("how many of them in London?", expect_not_org_wide_100),
+                (
+                    "who on Alice Nguyen's team knows Kubernetes and is in Dubai?",
+                    expect_composition_or_empty,
+                ),
+                ("who knows kubernetees?", expect_skill_or_rag),
+                ("how much PTO does Alice Nguyen have?", expect_unsupported),
+                ("what's Alice Nguyen's salary?", expect_salary_answer),
+                ("start over", expect_greeting),
+                (
+                    "of them?",
+                    all_of(expect_clarify, expect_planner_mode("guard_empty_anaphora")),
+                ),
+                ("who knows Docker?", expect_topic_shift_fresh),
+                (
+                    "who joined in the last 90 days?",
+                    all_of(expect_hire_window, expect_planner_mode("guard_hire_window")),
+                ),
+                (
+                    "what is the average tenure in Engineering?",
+                    all_of(expect_tenure_answer, expect_planner_mode("guard_tenure")),
+                ),
+                ("goodbye", expect_greeting),
+            ],
+        ),
+    ]
+
+
 def build_scenarios(*, suite: str = "all") -> list[Scenario]:
     basic = _build_basic_scenarios()
     hard = build_hard_scenarios()
@@ -1415,7 +2035,19 @@ def build_scenarios(*, suite: str = "all") -> list[Scenario]:
     nlu_slots = build_nlu_slots_scenarios()
     utterances = build_user_utterance_scenarios()
     orch = build_orchestrator_scenarios()
+    production = build_production_scenarios()
     suite = (suite or "all").lower()
+    if suite in {"production", "architecture"}:
+        return production + [
+            sc
+            for sc in orch
+            if sc.name
+            in {
+                "OR_reports_skill_place",
+                "OR_long_orchestrator_dialog",
+                "OR_confirm_status_continuation",
+            }
+        ]
     if suite == "basic":
         return basic
     if suite == "hard":
@@ -1424,7 +2056,7 @@ def build_scenarios(*, suite: str = "all") -> list[Scenario]:
         return utterances + list_ref + nlu_slots
     if suite == "orchestrator":
         return orch + list_ref
-    return basic + hard + list_ref + nlu_slots + utterances + orch
+    return basic + hard + list_ref + nlu_slots + utterances + orch + production
 
 
 def _build_basic_scenarios() -> list[Scenario]:
@@ -1454,7 +2086,7 @@ def _build_basic_scenarios() -> list[Scenario]:
         Scenario(
             "D_sql_facets",
             "Facet count then names please (focus memory)",
-            ["sql"],
+            ["resume_search", "sql"],
             [
                 ("in how different countries do we have employees?", expect_positive_count),
                 ("names please", expect_country_names),
@@ -1463,7 +2095,7 @@ def _build_basic_scenarios() -> list[Scenario]:
         Scenario(
             "E_sql_cities",
             "City facet → names please",
-            ["sql"],
+            ["resume_search", "sql"],
             [
                 ("in how different cities do we have employees?", expect_facet_small_count),
                 ("names please", expect_city_names),
@@ -1533,13 +2165,13 @@ def _build_basic_scenarios() -> list[Scenario]:
         Scenario(
             "M_employee_location",
             "Employee tool: where does person live",
-            ["employee"],
+            ["employee", "resume_search"],
             [("where does carol garcia live?", expect_person_location)],
         ),
         Scenario(
             "N_entity_memory",
             "List Berlin → ask where Ivy lives (entity memory)",
-            ["sql", "employee"],
+            ["sql", "employee", "resume_search"],
             [
                 ("List employees in Berlin", expect_has_names),
                 ("where does carol live?", expect_person_location),
@@ -2193,6 +2825,25 @@ def build_user_utterance_scenarios() -> list[Scenario]:
             ],
         ),
         Scenario(
+            "UQ_tool_select_typo_paraphrases",
+            "Typos/paraphrases via tool-selecting planner (no new regex)",
+            ["sql", "resume_search"],
+            [
+                ("how meny employes in sales?", expect_positive_count),
+                ("count peeps in product pls", expect_positive_count),
+                ("who knows kubernetees?", expect_skill_or_rag),
+            ],
+        ),
+        Scenario(
+            "UQ_tool_select_hitl_status",
+            "Novel status paraphrase → HITL confirm → commit",
+            ["employee", "resume_search", "clarify"],
+            [
+                ("activate Carol Garcia", expect_status_confirm_gate_only),
+                ("yes", expect_status_true),
+            ],
+        ),
+        Scenario(
             "UQ_topic_shift_greeting_midway",
             "Mid-dialog greeting clears; fresh search works",
             ["sql", "greeting", "resume_search"],
@@ -2258,25 +2909,45 @@ def main() -> int:
     )
     parser.add_argument(
         "--suite",
-        choices=("basic", "hard", "utterances", "orchestrator", "all"),
+        choices=(
+            "basic",
+            "hard",
+            "utterances",
+            "orchestrator",
+            "production",
+            "architecture",
+            "all",
+        ),
         default="all",
         help=(
             "basic = smoke; hard = adversarial + list/NLU; "
             "utterances = natural user paraphrases; "
-            "orchestrator = Wave A–D contracts; all = everything (default)"
+            "orchestrator = Wave A–D contracts; "
+            "production|architecture = production architecture gate; "
+            "all = everything (default)"
         ),
     )
     parser.add_argument(
         "--only",
         default="",
-        help="Comma-separated scenario name prefixes (e.g. OR_,G_,ST_,UQ_,NS_,LR_,AG_)",
+        help="Comma-separated scenario name prefixes (e.g. OR_,G_,ST_,UQ_,NS_,LR_,AG_,PR_)",
+    )
+    parser.add_argument(
+        "--require-meta",
+        action="store_true",
+        help="Fail turns when ChatResponse.meta is missing (debug header ignored)",
     )
     args = parser.parse_args()
     base = args.base.rstrip("/")
 
     print(f"Target: {base}/v1/chat")
     print(f"Suite: {args.suite}")
-    print(f"Headers: X-User-Id={HEADERS['X-User-Id']} X-Role={HEADERS['X-Role']}")
+    print(
+        f"Headers: X-User-Id={HEADERS['X-User-Id']} X-Role={HEADERS['X-Role']} "
+        f"X-HRMind-Debug={HEADERS.get('X-HRMind-Debug')}"
+    )
+    if args.require_meta:
+        print("Require meta: on")
     try:
         h = health_check(base)
         print(f"Health: {h}")
@@ -2297,21 +2968,45 @@ def main() -> int:
 
     passed = failed = 0
     details: list[str] = []
+    arch_turns = hitl_turns = repair_turns = multi_tool_turns = 0
+    arch_pass = hitl_pass = repair_pass = multi_tool_pass = 0
 
     for sc in scenarios:
         print(f"\n=== {sc.name} ===")
         print(f"  ({sc.description}; tools≈{','.join(sc.tools)})")
-        run_scenario(base, sc)
+        run_scenario(base, sc, require_meta=args.require_meta)
         for i, r in enumerate(sc.results, 1):
             status = "PASS" if r.ok else "FAIL"
             if r.ok:
                 passed += 1
             else:
                 failed += 1
+            meta = r.meta or {}
+            mode = str(meta.get("planner_mode") or "")
+            is_arch = sc.name.startswith("PR_") or "guard_" in mode or "tool_select" in mode
+            if is_arch:
+                arch_turns += 1
+                arch_pass += int(r.ok)
+            if meta.get("needs_hitl") or "hitl" in mode:
+                hitl_turns += 1
+                hitl_pass += int(r.ok)
+            if int(meta.get("repairs") or 0) >= 1 or "repair" in mode:
+                repair_turns += 1
+                repair_pass += int(r.ok)
+            tool = r.tool or meta.get("tools_answered") or ""
+            nodes = meta.get("plan_nodes") or []
+            if (
+                (isinstance(tool, str) and "+" in tool)
+                or len({str(n) for n in nodes if n not in {"intersect", "count"}}) >= 2
+            ):
+                multi_tool_turns += 1
+                multi_tool_pass += int(r.ok)
             print(f"  [{status}] T{i} ({r.ms}ms) Q: {r.question!r}")
             print(f"         A: {r.answer[:240]!r}")
             if r.note:
                 print(f"         note: {r.note}")
+            if r.tool or mode:
+                print(f"         tool={r.tool!r} mode={mode!r} repairs={meta.get('repairs')}")
             if r.sources:
                 kinds = [s.get("kind") for s in r.sources[:5] if isinstance(s, dict)]
                 print(f"         sources: {kinds}")
@@ -2324,6 +3019,10 @@ def main() -> int:
 
     print("\n" + "=" * 60)
     print(f"SUMMARY: {passed} passed, {failed} failed, {passed + failed} turns")
+    print(
+        f"ARCHITECTURE: {arch_pass}/{arch_turns} | HITL {hitl_pass}/{hitl_turns} | "
+        f"repairs {repair_pass}/{repair_turns} | multi-tool {multi_tool_pass}/{multi_tool_turns}"
+    )
     if details:
         print("\nFAILURES:")
         for d in details:
@@ -2331,8 +3030,20 @@ def main() -> int:
 
     out = {
         "base": base,
+        "suite": args.suite,
+        "require_meta": args.require_meta,
         "passed": passed,
         "failed": failed,
+        "architecture": {
+            "passed": arch_pass,
+            "turns": arch_turns,
+            "hitl_passed": hitl_pass,
+            "hitl_turns": hitl_turns,
+            "repair_passed": repair_pass,
+            "repair_turns": repair_turns,
+            "multi_tool_passed": multi_tool_pass,
+            "multi_tool_turns": multi_tool_turns,
+        },
         "scenarios": [
             {
                 "name": sc.name,
@@ -2351,6 +3062,8 @@ def main() -> int:
                         "clarify": r.clarify,
                         "confidence": r.confidence,
                         "sources": r.sources,
+                        "tool": r.tool,
+                        "meta": r.meta,
                     }
                     for r in sc.results
                 ],

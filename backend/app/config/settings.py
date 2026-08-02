@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     # When true (default in production/staging), Redis is required for chat sessions.
     require_redis: bool | None = None
     session_ttl_seconds: int = 86400
+    # Tool-selecting planner: off | residual | primary
+    # residual = replace llm_slots/llm only; primary = also replace query_state/heuristic
+    # (guards: greeting router, ACL, OOS, ordinals, meta-count, status confirm remain).
+    tool_selecting_mode: str = "primary"
+    tool_selecting_confidence_clarify: float = 0.55
+    tool_selecting_confidence_write: float = 0.75
+    tool_selecting_max_repairs: int = 2
+    tool_selecting_hitl_status: bool = True
+    # When primary selector fails, fall back to regex/heuristic cascade (migration safety).
+    tool_selecting_fallback_legacy: bool = True
+    # When true, /v1/chat always includes planner meta (else only with X-HRMind-Debug: 1).
+    chat_debug_meta: bool = False
 
     @field_validator("database_url", mode="before")
     @classmethod

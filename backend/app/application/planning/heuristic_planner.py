@@ -68,7 +68,12 @@ _ORG_HEADCOUNT_RE = re.compile(
     r"(?:what(?:'s|\s+is)\s+)?(?:our\s+|the\s+)?headcount\s*\??|"
     r"total\s+employees?\s*\??|"
     r"(?:what(?:'s|\s+is)\s+)?(?:the\s+)?(?:total\s+)?(?:number\s+of\s+)?employees?\s*\??|"
-    r"how many people work here\s*\??"
+    r"how many people work here\s*\??|"
+    # Paraphrases that the LLM misroutes to a department-sized 17 — not the
+    # canonical "How many employees do we have?" (kept for tool-select / repair).
+    r"(?:quick\s*[—\-]?\s*)?how many people(?:\s+do\s+we\s+have)?(?:\s+in\s+total)?\s*\??|"
+    r"how many people(?:\s+(?:overall|altogether))?\s*\??|"
+    r"overall\s+headcount\s*\??"
     r")\s*$",
     re.I,
 )
@@ -224,7 +229,7 @@ _PERSON_LOCATION_RE = re.compile(
 _ABOUT_PERSON_RE = re.compile(
     r"(?:tell me about|who is|what about|profile of)\s+"
     r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)|"
-    r"([A-Za-z][A-Za-z\-']+(?:\s+[A-Za-z][A-Za-z\-']+)?)\s*(?:'s)?\s+"
+    r"([A-Za-z][A-Za-z\-]+(?:\s+[A-Za-z][A-Za-z\-]+)?)\s*(?:'s)?\s+"
     r"(?:profile|details)\b",
     re.I,
 )
@@ -475,6 +480,140 @@ def _resolve_pronoun_employee_id(
     return None
 
 
+_COHORT_STATUS_READ_RE = re.compile(
+    r"\b("
+    r"status(?:es)?\s+of\s+(?:them|those|these|the\s+(?:group|list|set|people|employees))|"
+    r"(?:their|there|these|those)\s+status(?:es)?|"
+    r"(?:what|whats|what's|give|show|list|tell).{0,48}\b"
+    r"(?:statuses|status\s+of\s+(?:them|those)|their\s+status|there\s+status)\b|"
+    r"\bstatuses?\s+please\b|"
+    r"give\s+(?:me\s+)?(?:their|there)\s+status(?:es)?"
+    r")\b",
+    re.I,
+)
+
+
+def try_cohort_status_read_plan(
+    question: str, *, memory: SessionMemory | None = None
+) -> ExecutionPlan | None:
+    """List agent + employment status for the prior cohort (read, not write)."""
+    q = (question or "").strip()
+    if not q or not _COHORT_STATUS_READ_RE.search(q):
+        return None
+    # Singular pronoun status reads stay on the person path ("her status").
+    if re.search(r"\b(her|his|she|he)\b", q, re.I) and not re.search(
+        r"\b(them|those|their|there|statuses)\b", q, re.I
+    ):
+        return None
+    # Writes are handled elsewhere.
+    if extract_status_change(q).matched:
+        return None
+    prior = list(memory.last_employee_ids) if memory and memory.last_employee_ids else []
+    listed = list(memory.last_listed) if memory and memory.last_listed else []
+    if not prior and listed:
+        prior = [str(e.employee_id) for e in listed if e.employee_id]
+    if not prior:
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question=(
+                "Which employees' statuses should I show? "
+                "List a cohort first (for example: names in Dubai), then ask again."
+            ),
+            refusal_code=RefusalCode.AMBIGUOUS.value,
+        )
+    columns = [
+        "id",
+        "first_name",
+        "last_name",
+        "department",
+        "position",
+        "status",
+        "employment_status",
+    ]
+    return _sql_over_ids(prior, count_only=False, columns=columns)
+
+
+def try_status_write_plan(
+    question: str,
+    *,
+    memory: SessionMemory | None = None,
+    scope_filters: dict | None = None,
+) -> ExecutionPlan | None:
+    """Compile a set_status DAG when the cheap status extractor matches.
+
+    Used as a PlanCompiler guard so seeded English writes stay deterministic;
+    novel paraphrases fall through to the tool-selecting planner (HITL).
+    """
+    q = (question or "").strip()
+    if not q:
+        return None
+    status_req = extract_status_change(q)
+    if not status_req.matched:
+        return None
+    from app.application.understanding.plan_from_query_state import _set_status_plan
+    from app.application.understanding.status_change import (
+        bind_status_subject_from_memory,
+        is_deictic_status_subject,
+    )
+    from app.domain.query_state import FilterSlot, QueryState as _QS
+
+    person_name = status_req.person_name
+    if is_deictic_status_subject(q) or (
+        person_name
+        and person_name.lower().split()[0] in {"current", "this", "that", "same"}
+    ):
+        person_name = None
+    filters: dict = dict(scope_filters or {})
+    slots: list[FilterSlot] = []
+    if status_req.city:
+        filters["city"] = status_req.city
+        slots.append(
+            FilterSlot(field="city", op="eq", value=status_req.city, confidence=0.95)
+        )
+    if status_req.country:
+        filters["country"] = status_req.country
+        slots.append(
+            FilterSlot(
+                field="country", op="eq", value=status_req.country, confidence=0.95
+            )
+        )
+    bound_id, bound_name = bind_status_subject_from_memory(
+        person_name=person_name,
+        email=status_req.email,
+        employee_id=status_req.employee_id,
+        city=status_req.city,
+        country=status_req.country,
+        memory=memory,
+    )
+    if (
+        not bound_id
+        and not person_name
+        and not status_req.email
+        and not status_req.city
+        and not status_req.country
+    ):
+        return ExecutionPlan(
+            nodes=[],
+            response_strategy="template",
+            clarify_question="Which employee's status should I update?",
+            refusal_code=RefusalCode.AMBIGUOUS.value,
+        )
+    return _set_status_plan(
+        _QS(
+            intent="set_status",
+            person_name=person_name or bound_name,
+            status_value=status_req.status_value,
+            status_email=status_req.email,
+            status_employee_id=status_req.employee_id or bound_id,
+            person_employee_ids=[bound_id] if bound_id else [],
+            filters=slots,
+            confidence=0.95,
+        ),
+        filters=filters,
+    )
+
+
 def wants_person_lookup(question: str) -> bool:
     """True when the question is asking about a specific person's profile attributes."""
     q = (question or "").strip()
@@ -492,6 +631,26 @@ def wants_person_lookup(question: str) -> bool:
 
 
 _MAX_ELLIPTICAL_TOKENS = 8
+
+# Org/cohort asks must never bind to the focused person ("how many employees…",
+# "names who live in Dubai") even when session focus is a single employee.
+_COHORT_ASK_RE = re.compile(
+    r"\b("
+    r"how\s+many|how\s+much|"
+    r"(?:all|which|list|show|give|gimme|find)\s+"
+    r"(?:(?:the|all|our)\s+)?(?:employees?|people|folks|staff|names?|ppl)|"
+    r"employees?\s+(?:who|that|with|have|knows?|lives?|living|in|from)|"
+    r"names?\s+(?:who|that|of)|"
+    r"who\s+(?:knows?|lives?|works?|are|is\s+in)|"
+    r"headcount|total\s+employees?"
+    r")\b",
+    re.I,
+)
+
+
+def is_cohort_question(question: str) -> bool:
+    """True when the utterance is about a set of people, not the bound person."""
+    return bool(_COHORT_ASK_RE.search(question or ""))
 
 
 def _focal_bound_employee_id(memory: SessionMemory | None) -> str | None:
@@ -525,6 +684,9 @@ def elliptical_bound_person_plan(
     if not q or not wants_person_lookup(q):
         return None
     if len(q.split()) > _MAX_ELLIPTICAL_TOKENS:
+        return None
+    # Org-wide / cohort asks beat singular person focus.
+    if is_cohort_question(q):
         return None
     # Named or pronoun subjects are handled on dedicated paths.
     if _PRONOUN_ONLY_RE.search(q):
@@ -776,13 +938,44 @@ def _match_entity_name(question: str, memory: SessionMemory | None) -> str | Non
         return None
     lower = question.lower()
     entities = sorted(memory.entity_memory, key=lambda e: len(e.display_name), reverse=True)
+    # Explicit multi-token person in the question beats first-name aliases.
+    # "Tell me about Alice Nguyen" must not bind remembered "Alice Bauer".
+    # Prefer Title-Case name pairs so "me about" is not captured.
+    explicit = re.search(
+        r"\b([A-Z][a-zA-Z\-']+\s+[A-Z][a-zA-Z\-']+)\b",
+        question or "",
+    )
+    if explicit:
+        asked = explicit.group(1).strip()
+        asked_l = asked.lower()
+        for ent in entities:
+            name = ent.display_name.strip()
+            if name.lower() == asked_l:
+                return name
+            aliases = [name.lower(), *[a.lower() for a in ent.aliases if a]]
+            if asked_l in aliases:
+                return name
+        # Conflicting last names among remembered people → do not bind.
+        asked_tokens = asked_l.split()
+        asked_last = asked_tokens[-1]
+        asked_first = asked_tokens[0]
+        for ent in entities:
+            name = ent.display_name.strip()
+            tokens = name.lower().split()
+            if (
+                len(tokens) >= 2
+                and tokens[0] == asked_first
+                and tokens[-1] != asked_last
+            ):
+                return None
+        return None
     # Exact full-name / alias containment first
     for ent in entities:
         name = ent.display_name.strip()
         if name and name.lower() in lower:
             return name
         for alias in ent.aliases:
-            if alias and alias.lower() in lower:
+            if alias and alias.lower() in lower and " " in alias.strip():
                 return name or alias
     # First/last token match when unique among remembered people
     token_hits: dict[str, list[str]] = {}
@@ -1153,6 +1346,7 @@ def _resume_search_plan(
     scope_filters: dict | None = None,
     city: str | None = None,
     country: str | None = None,
+    skill: str | None = None,
 ) -> ExecutionPlan:
     """RAG plan with optional prior-cohort / place / SQL-filter scoping.
 
@@ -1168,6 +1362,9 @@ def _resume_search_plan(
         place["country"] = country
 
     resume_params: dict = {"question": question}
+    if skill:
+        resume_params["purpose"] = "skill"
+        resume_params["skill"] = skill
     if intersect_with:
         resume_params["employee_ids"] = list(intersect_with)
 
@@ -1312,6 +1509,7 @@ def try_heuristic_plan(
             count_only=bool(prior_ids or scope_filters),
             intersect_with=prior_ids or None,
             scope_filters=scope_filters if (scope_filters and not prior_ids) else None,
+            skill=skill,
         )
 
     # Birthdays live only in resume text — always retrieval, never SQL
@@ -1397,47 +1595,11 @@ def try_heuristic_plan(
         )
 
     # Agent status-flag write (any role; open access) — resolve via RAG for names
-    status_req = extract_status_change(q)
-    if status_req.matched:
-        from app.domain.query_state import FilterSlot, QueryState as _QS
-        from app.application.understanding.plan_from_query_state import _set_status_plan
-        from app.application.understanding.status_change import (
-            bind_status_subject_from_memory,
-        )
-
-        filters = dict(scope_filters or {})
-        slots: list[FilterSlot] = []
-        if status_req.city:
-            filters["city"] = status_req.city
-            slots.append(
-                FilterSlot(field="city", op="eq", value=status_req.city, confidence=0.95)
-            )
-        if status_req.country:
-            filters["country"] = status_req.country
-            slots.append(
-                FilterSlot(
-                    field="country", op="eq", value=status_req.country, confidence=0.95
-                )
-            )
-        bound_id, bound_name = bind_status_subject_from_memory(
-            person_name=status_req.person_name,
-            email=status_req.email,
-            employee_id=status_req.employee_id,
-            city=status_req.city,
-            country=status_req.country,
-            memory=memory,
-        )
-        pseudo = _QS(
-            intent="set_status",
-            person_name=status_req.person_name or bound_name,
-            status_value=status_req.status_value,
-            status_email=status_req.email,
-            status_employee_id=status_req.employee_id or bound_id,
-            person_employee_ids=[bound_id] if bound_id else [],
-            filters=slots,
-            confidence=0.95,
-        )
-        return _set_status_plan(pseudo, filters=filters)
+    status_plan = try_status_write_plan(
+        q, memory=memory, scope_filters=scope_filters
+    )
+    if status_plan is not None:
+        return status_plan
 
     # Meta-count: "how many was that again?" — use cached count / prior cohort, never nl2sql
     if _META_COUNT_RE.search(q):
@@ -1574,10 +1736,11 @@ def try_heuristic_plan(
     city = _detect_city(q)
     country = _detect_country(q)
     if anaphora and (city or country):
+        any_of_them = bool(re.search(r"\bany(?:one)?\s+of\s+them\b", q, re.I))
         return location_cohort_plan(
             city=city,
             country=country,
-            count_only=bool(_COUNT_RE.search(q)),
+            count_only=bool(_COUNT_RE.search(q)) or any_of_them,
             intersect_with=prior_ids,
         )
 
@@ -1732,6 +1895,7 @@ def try_heuristic_plan(
             scope_filters=filters,
             city=city or remembered_city,
             country=country or remembered_country,
+            skill=skill_match.group(1),
         )
 
     # "Tell me about Bob" / "Who is Alice Nguyen?" — the profile keeps its Location

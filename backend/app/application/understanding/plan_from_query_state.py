@@ -576,7 +576,11 @@ def _skill_plan(state: QueryState, *, prior_ids: list[str] | None) -> ExecutionP
     if state.hire_year_gt:
         filters["hire_date_gt"] = f"{state.hire_year_gt}-01-01"
     question = f"employees with {state.skill} experience"
-    resume_params: dict = {"question": question}
+    resume_params: dict = {
+        "question": question,
+        "purpose": "skill",
+        "skill": state.skill,
+    }
     if prior_ids:
         resume_params["employee_ids"] = list(prior_ids)
     nodes: list[PlanNode] = [

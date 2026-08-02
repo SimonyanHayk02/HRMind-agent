@@ -110,14 +110,27 @@ def wire_application_stack(container) -> None:
     )
     container.extras["catalog_service"] = catalog_service
 
+    validator = PlanValidator(tools, operators, max_nodes=settings.max_plan_nodes)
     planner = PlanCompiler(
         container.llm,
         tools,
         prompts_dir,
         max_context=settings.max_context,
         catalog_service=catalog_service,
+        tool_selecting_mode=getattr(settings, "tool_selecting_mode", "primary"),
+        tool_selecting_confidence_clarify=getattr(
+            settings, "tool_selecting_confidence_clarify", 0.55
+        ),
+        tool_selecting_confidence_write=getattr(
+            settings, "tool_selecting_confidence_write", 0.75
+        ),
+        tool_selecting_max_repairs=getattr(settings, "tool_selecting_max_repairs", 2),
+        tool_selecting_hitl_status=getattr(settings, "tool_selecting_hitl_status", True),
+        tool_selecting_fallback_legacy=getattr(
+            settings, "tool_selecting_fallback_legacy", True
+        ),
+        plan_validator=validator,
     )
-    validator = PlanValidator(tools, operators, max_nodes=settings.max_plan_nodes)
     node_runner = NodeRunner(tools, operators, timeout_ms=settings.tool_timeout_ms)
     graph_executor = LangGraphExecutor(node_runner)
     formatter = ResponseFormatter(container.llm, prompts_dir)

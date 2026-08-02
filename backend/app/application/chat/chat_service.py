@@ -35,6 +35,8 @@ from app.application.understanding.status_change import (
     PENDING_SET_STATUS_KEY,
     PENDING_STATUS_MUTATION_KEY,
     extract_status_change,
+    is_cancel_status_update,
+    is_confirm_status_update,
 )
 from app.config.logging import get_logger
 from app.domain.auth import AuthContext
@@ -88,7 +90,14 @@ class ChatService:
         self._formatter = formatter
         self._catalog = catalog_service
 
-    async def handle(self, body: ChatRequest, *, auth: AuthContext) -> ChatResponse:
+    async def handle(
+        self,
+        body: ChatRequest,
+        *,
+        auth: AuthContext,
+        debug_meta: bool = False,
+        force_repair: bool = False,
+    ) -> ChatResponse:
         trace_id = str(uuid4())
         session = await self._context.load(body.session_id, auth)
         session = await self._context.append_user(session, body.question)
@@ -102,6 +111,7 @@ class ChatService:
         )
 
         planner_mode = "greeting"
+        compile_meta: dict = {}
         rule = self._rule_router.route(body.question)
         if rule == RouterLabel.GREETING:
             plan = ExecutionPlan(
@@ -125,8 +135,19 @@ class ChatService:
                 or session.active_referent
             )
             status_req = extract_status_change(body.question)
+            pending_status = (
+                PENDING_STATUS_MUTATION_KEY in session.tool_fact_cache
+                or PENDING_SET_STATUS_KEY in session.tool_fact_cache
+            )
             if label == RouterLabel.CHITCHAT and (
                 status_req.matched
+                or (
+                    pending_status
+                    and (
+                        is_confirm_status_update(body.question)
+                        or is_cancel_status_update(body.question)
+                    )
+                )
                 or has_list_referent_phrase(body.question)
                 or extract_birthday(body.question).matched
             ):
@@ -177,11 +198,12 @@ class ChatService:
                 )
                 planner_mode = "greeting"
             else:
-                plan, planner_mode = await self._planner.compile(
+                plan, planner_mode, compile_meta = await self._planner.compile(
                     body.question,
                     auth=auth,
                     memory=session,
                     context_manager=self._context,
+                    force_repair=force_repair,
                 )
                 try:
                     self._validator.validate(plan, auth)
@@ -190,6 +212,7 @@ class ChatService:
                     if is_soft_unauthorized_error(str(exc)):
                         plan = unauthorized_plan()
                         planner_mode = "soft_unauthorized"
+                        compile_meta = {**compile_meta, "planner_mode": planner_mode}
                     else:
                         raise
 
@@ -203,6 +226,7 @@ class ChatService:
         session = await self._sync_pending_set_status(
             session, plan=plan, query_state=query_state
         )
+        session = await self._sync_pending_tool_fact(session, plan=plan)
 
         logger.info(
             "chat_plan_ready",
@@ -263,6 +287,17 @@ class ChatService:
             **{**trace.as_dict(), "tool": tool, "refusal_code": refusal_code},
         )
 
+        meta = None
+        if debug_meta:
+            meta = {
+                **(compile_meta or {}),
+                "planner_mode": planner_mode,
+                "plan_nodes": [n.name for n in plan.nodes],
+                "tools_called": list(trace.tools_called),
+                "tools_answered": tool,
+                "router_label": trace.router_label,
+            }
+
         return ChatResponse(
             session_id=session.session_id,
             answer=answer or "",
@@ -272,6 +307,7 @@ class ChatService:
             tool=tool,
             trace_id=trace_id,
             degraded=state.degraded,
+            meta=meta,
         )
 
     async def _sync_pending_set_status(
@@ -324,6 +360,38 @@ class ChatService:
                 session, PENDING_STATUS_MUTATION_KEY
             )
         return session
+
+    async def _sync_pending_tool_fact(
+        self,
+        session: SessionMemory,
+        *,
+        plan: ExecutionPlan,
+    ) -> SessionMemory:
+        """Persist or clear planner-requested HITL facts (tool-select status confirm)."""
+        pending = getattr(plan, "pending_tool_fact", None)
+        if not isinstance(pending, dict):
+            return session
+        key = pending.get("key")
+        if key not in {PENDING_SET_STATUS_KEY, PENDING_STATUS_MUTATION_KEY}:
+            return session
+        if pending.get("clear"):
+            session = await self._context.clear_tool_fact(session, str(key))
+            # Cancelling a named HITL should drop both pending shapes.
+            other = (
+                PENDING_SET_STATUS_KEY
+                if key == PENDING_STATUS_MUTATION_KEY
+                else PENDING_STATUS_MUTATION_KEY
+            )
+            return await self._context.clear_tool_fact(session, other)
+        return await self._context.put_tool_fact(
+            session,
+            ToolFact(
+                key=str(key),
+                value=pending.get("value"),
+                created_at=datetime.now(UTC),
+                ttl_seconds=180,
+            ),
+        )
 
     async def _sync_pending_status_mutation(
         self,

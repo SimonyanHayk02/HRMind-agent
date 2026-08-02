@@ -63,6 +63,19 @@ pytest -q
 python scripts/run_eval.py
 ```
 
+### Production architecture QA gate
+
+With the API up (Redis + Postgres healthy, `OPENAI_API_KEY` set for real tool-select):
+
+```bash
+# exit 0 required for release
+python scripts/qa_chat_local.py --suite production --require-meta --out /tmp/hrmind_prod_qa.json
+```
+
+`all` remains the full regression (basic + hard + utterances + orchestrator + production).
+Chat calls send `X-HRMind-Debug: 1` so responses include planner `meta` for structural asserts.
+Dev-only `X-HRMind-Force-Repair: 1` exercises the tool-selector repair loop (ignored unless `app_env` is development/test).
+
 ## Auth headers (dev)
 
 - `X-User-Id`

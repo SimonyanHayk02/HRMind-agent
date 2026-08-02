@@ -368,3 +368,12 @@ def test_entity_resolver_from_refs() -> None:
     found, conf = resolver.resolve_from_refs("Ada", refs)
     assert found == eid
     assert conf > 0
+    # Multi-token query must not bind on first-name alias alone.
+    other = uuid4()
+    mixed = refs + [
+        EntityRef(employee_id=other, display_name="Ada Smith", aliases=["Ada"])
+    ]
+    found2, _ = resolver.resolve_from_refs("Ada Lovelace", mixed)
+    assert found2 == eid
+    found3, _ = resolver.resolve_from_refs("Ada Nguyen", mixed)
+    assert found3 is None

@@ -9,6 +9,10 @@ from app.domain.enums import Role
 from app.domain.errors import ForbiddenError, NotFoundError
 from app.domain.policies.column_policy import allowed_columns
 from app.domain.policies.rbac import can_access_employee, require_tool
+from app.application.planning.tool_schemas import (
+    EMPLOYEE_DESCRIPTION,
+    EMPLOYEE_INPUT_SCHEMA,
+)
 from app.domain.tools.base import SourceRef, ToolMeta, ToolResult
 from app.ports.employee_repository import EmployeeRepository
 
@@ -121,17 +125,10 @@ class EmployeeTool:
         self._repo_factory = repo_factory
         self._meta = ToolMeta(
             name="employee",
-            description="Lookup employee profile, manager, department roster, or set status flag",
+            description=EMPLOYEE_DESCRIPTION,
+            input_schema=EMPLOYEE_INPUT_SCHEMA,
             permissions=list(Role),
             estimated_latency_ms=50,
-            input_schema={
-                "action": "profile|manager|reports|department|by_email|by_id|by_name|set_status",
-                "employee_id": "uuid?",
-                "email": "str?",
-                "department": "str?",
-                "name": "str?",
-                "status": "bool?",
-            },
         )
 
     @property
@@ -508,6 +505,14 @@ class EmployeeTool:
             eid, conf = EntityResolver().resolve_from_refs(clean, refs)
             if eid is not None:
                 emp = await employees.get_by_id(eid)
+                # Multi-token queries require the remembered person's full name
+                # to equal the asked name — never first-name alias remaps.
+                tokens = [t for t in clean.split() if t]
+                if emp and len(tokens) >= 2:
+                    remembered = (emp.full_name or "").strip().lower()
+                    asked = clean.lower()
+                    if remembered != asked and f"{emp.first_name} {emp.last_name}".lower() != asked:
+                        emp = None
                 if emp and (
                     skip_access_check
                     or can_access_employee(

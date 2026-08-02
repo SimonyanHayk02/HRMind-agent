@@ -9,6 +9,10 @@ from app.adapters.cache import keys as cache_keys
 from app.domain.auth import AuthContext
 from app.domain.enums import Role
 from app.domain.policies.rbac import require_tool
+from app.application.planning.tool_schemas import (
+    RESUME_SEARCH_DESCRIPTION,
+    RESUME_SEARCH_INPUT_SCHEMA,
+)
 from app.domain.tools.base import SourceRef, ToolMeta, ToolResult
 from app.ports.cache import CachePort
 from app.ports.embeddings import EmbeddingClient
@@ -19,6 +23,7 @@ from app.tools.resume_search.context_builder import build_structured_context
 from app.tools.resume_search.entity_resolution import Resolution, resolve_employees
 from app.tools.resume_search.fusion import DEFAULT_K
 from app.tools.resume_search.reranker import rerank
+from app.tools.resume_search.skills import extract_skill, filter_hits_for_skill
 
 log = structlog.get_logger(__name__)
 
@@ -124,7 +129,8 @@ class ResumeSearchTool:
         self._name_similarity = name_similarity
         self._meta = ToolMeta(
             name="resume_search",
-            description="Semantic search over employee resumes",
+            description=RESUME_SEARCH_DESCRIPTION,
+            input_schema=RESUME_SEARCH_INPUT_SCHEMA,
             permissions=list(Role),
             estimated_latency_ms=400,
             cache_policy="retrieval",
@@ -145,6 +151,7 @@ class ResumeSearchTool:
             params["employee_ids"] = sorted(scope_ids)
         scope_key = ",".join(sorted(scope_ids)[:80]) if scope_ids else ""
         attribute_request = resolve_purpose(purpose)
+        skill_key = str(params.get("skill") or "").strip().lower()
         key = cache_keys.build(
             "retrieval",
             auth,
@@ -153,6 +160,7 @@ class ResumeSearchTool:
             top_k=self._top_k,
             scope=scope_key,
             purpose=purpose,
+            skill=skill_key,
             # Attribute answers are date-sensitive ("today", "turning 41") and are
             # shaped by these params, so two questions about the same person or
             # cohort must not share a cache entry.
@@ -211,17 +219,38 @@ class ResumeSearchTool:
             if scope_ids:
                 hits = [h for h in hits if str(h.get("employee_id")) in scope_ids]
 
+            purpose = str(params.get("purpose") or "").strip().lower()
             if name_resolve:
                 named_hits = [h for h in hits if _name_hit_matches(question, h)]
                 if named_hits:
                     hits = named_hits
                 rerank_k = max(self._rerank_top_k, 20)
+            elif purpose == "skill":
+                # Skill counts/lists need broad recall — default rerank_top_k=5
+                # was collapsing "how many know Python?" to a handful of hits.
+                rerank_k = max(self._rerank_top_k, self._top_k)
             else:
                 rerank_k = self._rerank_top_k
 
             ranked = rerank(question, hits, rerank_k)
+            skill = extract_skill(
+                question, explicit=str(params.get("skill") or "").strip() or None
+            )
             if name_resolve:
                 ranked = [h for h in ranked if _name_hit_matches(question, h)] or ranked
+            elif skill and purpose in {"", "skill"}:
+                # RAG recall stays semantic; require the chunk text to actually
+                # mention the skill so Docker neighbors cannot join Kubernetes.
+                # Also covers heuristic skill plans that omit purpose=skill.
+                before = len(ranked)
+                ranked = filter_hits_for_skill(ranked, skill)
+                if before and not ranked:
+                    log.info(
+                        "skill_lexical_filter_empty",
+                        skill=skill,
+                        question=question,
+                        pre_filter_hits=before,
+                    )
             else:
                 # Score-gate generic semantic hits before materializing a "them" cohort.
                 ranked = _score_gate_hits(ranked, min_score=_GENERIC_MIN_SCORE)

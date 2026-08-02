@@ -4,6 +4,10 @@ from typing import Any
 
 from app.domain.auth import AuthContext
 from app.domain.enums import Role
+from app.application.planning.tool_schemas import (
+    GREETING_DESCRIPTION,
+    GREETING_INPUT_SCHEMA,
+)
 from app.domain.tools.base import ToolMeta, ToolResult
 from app.tools.greeting.replies import render_social_reply
 
@@ -12,7 +16,8 @@ class GreetingTool:
     def __init__(self) -> None:
         self._meta = ToolMeta(
             name="greeting",
-            description="Respond to hello/bye/thanks/chitchat without LLM",
+            description=GREETING_DESCRIPTION,
+            input_schema=GREETING_INPUT_SCHEMA,
             estimated_latency_ms=5,
             permissions=list(Role),
             cache_policy="none",

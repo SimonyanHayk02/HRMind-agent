@@ -20,6 +20,51 @@ class EntityResolver:
     def __init__(self, employees: EmployeeRepository | None = None) -> None:
         self._employees = employees
 
+    @staticmethod
+    def _alias_matches_needle(alias: str, needle: str) -> bool:
+        """Match remembered aliases without first-name stealing a full name.
+
+        ``Alice`` must not bind ``Alice Nguyen`` when the remembered person is
+        Alice Bauer — multi-token queries require full-name / last-name agreement.
+        """
+        a = (alias or "").strip().lower()
+        n = (needle or "").strip().lower()
+        if not a or not n:
+            return False
+        if a == n or n == a:
+            return True
+        a_tokens = [t for t in a.split() if t]
+        n_tokens = [t for t in n.split() if t]
+        if not a_tokens or not n_tokens:
+            return False
+        # Exact full-name containment either way.
+        if a in n.split() and len(a_tokens) >= 2:
+            return True
+        if n in a.split() and len(n_tokens) >= 2:
+            return True
+        if a == n or f"{' '.join(a_tokens)}" == f"{' '.join(n_tokens)}":
+            return True
+        # Multi-token needle: require full equality or last-name match with
+        # matching first token — never first-name-only alias hits.
+        if len(n_tokens) >= 2:
+            if a == n:
+                return True
+            if len(a_tokens) >= 2 and a_tokens[0] == n_tokens[0] and a_tokens[-1] == n_tokens[-1]:
+                return True
+            if len(a_tokens) == 1:
+                # Alias is a bare first name — only match single-token needles.
+                return False
+            # Needle last name equals alias last name and first names agree.
+            if a_tokens[0] == n_tokens[0] and a_tokens[-1] == n_tokens[-1]:
+                return True
+            return False
+        # Single-token needle: allow first/last token equality or unique alias.
+        if n in a_tokens or a == n:
+            return True
+        if any(t.startswith(n) for t in a_tokens if len(n) > 2):
+            return True
+        return False
+
     def resolve_from_refs(
         self, name: str, entities: Sequence[EntityRef]
     ) -> tuple[UUID | None, float]:
@@ -37,20 +82,17 @@ class EntityResolver:
             aliases = [ent.display_name.lower(), *[a.lower() for a in ent.aliases]]
             matched = False
             conf = ent.confidence
-            if needle in aliases or any(
-                a == needle or needle in a.split() or a in needle.split()
-                for a in aliases
-            ):
-                matched = True
-            else:
-                for a in aliases:
-                    tokens = a.split()
-                    if needle in tokens or any(
-                        t.startswith(needle) for t in tokens if len(needle) > 2
-                    ):
-                        matched = True
+            for a in aliases:
+                if self._alias_matches_needle(a, needle):
+                    matched = True
+                    # Full-name equality keeps full confidence; partial token lower.
+                    if a == needle:
+                        conf = ent.confidence
+                    elif len(needle.split()) >= 2 and a != needle:
+                        conf = max(0.75, ent.confidence * 0.95)
+                    else:
                         conf = max(0.7, ent.confidence * 0.9)
-                        break
+                    break
             if matched and ent.employee_id not in seen:
                 seen.add(ent.employee_id)
                 hits.append((ent.employee_id, conf))

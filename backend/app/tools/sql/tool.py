@@ -10,6 +10,7 @@ from app.domain.auth import AuthContext
 from app.domain.enums import Role, SqlMode
 from app.domain.policies.column_policy import allowed_columns
 from app.domain.policies.rbac import require_tool
+from app.application.planning.tool_schemas import SQL_DESCRIPTION, SQL_INPUT_SCHEMA
 from app.domain.tools.base import SourceRef, ToolMeta, ToolResult
 from app.ports.cache import CachePort
 from app.ports.llm import LLMClient
@@ -35,7 +36,8 @@ class SqlTool:
         self._prompt_loader = prompt_loader or (lambda name: "")
         self._meta = ToolMeta(
             name="sql",
-            description="Query structured employee data via constrained filters or NL2SQL",
+            description=SQL_DESCRIPTION,
+            input_schema=SQL_INPUT_SCHEMA,
             permissions=[Role.RECRUITER, Role.MANAGER],
             estimated_latency_ms=200,
             cache_policy="sql",

@@ -74,6 +74,8 @@ class ExecutionPlan(BaseModel):
     active_cohort_node: str | None = None
     # Optional planner hint for the runtime refusal resolver (not client-facing).
     refusal_code: str | None = None
+    # Optional tool-fact payload for HITL (e.g. pending status confirm).
+    pending_tool_fact: dict[str, Any] | None = None
 
     @field_validator("version", mode="before")
     @classmethod

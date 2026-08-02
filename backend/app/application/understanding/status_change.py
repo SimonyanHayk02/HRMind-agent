@@ -452,6 +452,14 @@ _CONFIRM_STATUS_RE = re.compile(
     re.I,
 )
 
+_CANCEL_STATUS_RE = re.compile(
+    r"^\s*(?:no|nope|cancel(?:\s+(?:it|that|the\s+(?:update|status(?:\s+update)?))?)?|"
+    r"never\s*mind|dont|don't|stop|abort|"
+    r"no\s+wait(?:\s+cancel)?|"
+    r"wait\s+cancel)\s*[.!?]?\s*$",
+    re.I,
+)
+
 
 def is_confirm_status_update(question: str) -> bool:
     """True when the user is confirming a pending multi-person status write."""
@@ -460,10 +468,27 @@ def is_confirm_status_update(question: str) -> bool:
         return False
     if extract_status_change(q).matched:
         return False
+    if is_cancel_status_update(q):
+        return False
     # Prefer the explicit phrase the clarify copy asks for.
     if re.search(r"\bconfirm(?:\s+(?:the\s+)?status(?:\s+update)?)?\b", q, re.I):
         return True
     return bool(_CONFIRM_STATUS_RE.match(q))
+
+
+def is_cancel_status_update(question: str) -> bool:
+    """True when the user rejects a pending status HITL confirm."""
+    q = (question or "").strip()
+    if not q or len(q) > 100:
+        return False
+    if extract_status_change(q).matched:
+        return False
+    low = q.lower()
+    if re.search(r"\b(cancel|never\s*mind|abort)\b", low):
+        return True
+    if re.search(r"\bno\s+wait\b", low):
+        return True
+    return bool(_CANCEL_STATUS_RE.match(q))
 
 
 def looks_like_bare_person_name(question: str) -> bool:

@@ -101,7 +101,7 @@ def test_plan_compiler_binds_ordinal_birthday() -> None:
     import asyncio
 
     async def _run() -> None:
-        plan, mode = await compiler.compile(
+        plan, mode, _meta = await compiler.compile(
             "give me the first persons date of birth",
             auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
             memory=mem,
@@ -120,7 +120,7 @@ def test_plan_compiler_clarifies_ordinal_without_list() -> None:
     import asyncio
 
     async def _run() -> None:
-        plan, mode = await compiler.compile(
+        plan, mode, _meta = await compiler.compile(
             "the first person's date of birth",
             auth=AuthContext(user_id="u", tenant_id="t", role=Role.RECRUITER),
             memory=SessionMemory(

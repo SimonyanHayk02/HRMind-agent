@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.domain.tools.base import SourceRef
@@ -22,3 +24,5 @@ class ChatResponse(BaseModel):
     tool: str | None = None
     trace_id: str | None = None
     degraded: bool = False
+    # Opt-in planner diagnostics (X-HRMind-Debug: 1 or chat_debug_meta). None for clients.
+    meta: dict[str, Any] | None = None

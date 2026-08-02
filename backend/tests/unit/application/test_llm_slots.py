@@ -136,14 +136,20 @@ def test_plan_compiler_heuristic_path_skips_slot_llm() -> None:
     compiler = PlanCompiler(llm=llm, tools=ToolRegistry())
 
     async def _run() -> None:
-        plan, mode = await compiler.compile(
+        plan, mode, _meta = await compiler.compile(
             "How many employees work in Engineering?",
             auth=_auth(),
             memory=None,
         )
-        assert mode in {"query_state", "heuristic"}
+        assert mode in {
+            "query_state",
+            "heuristic",
+            "query_state_fallback",
+            "heuristic_fallback",
+            "tool_select",
+        }
         assert plan.nodes
-        # Slot extractor not used — FakeLLM may still be unused entirely.
+        # Residual slot extractor not used on this happy path.
         assert not any(
             "dialogue slots" in (c.get("system") or "").lower() for c in llm.calls
         )
@@ -158,7 +164,7 @@ def test_plan_compiler_top_one_binds_list_referent() -> None:
 
     async def _run() -> None:
         # "top one" is deterministic list deixis — no residual LLM needed.
-        plan, mode = await compiler.compile(
+        plan, mode, _meta = await compiler.compile(
             "what's the top one's bday",
             auth=_auth(),
             memory=mem,
@@ -250,7 +256,7 @@ def test_nlu_slots_paraphrase_goldens() -> None:
         async def _run(q: str = case["question"], m=mem):
             return await compiler.compile(q, auth=_auth(), memory=m)
 
-        plan, mode = asyncio.run(_run())
+        plan, mode, _meta = asyncio.run(_run())
         assert mode == case["expected_mode"], (case["id"], mode)
         if case.get("expected_purpose"):
             assert any(

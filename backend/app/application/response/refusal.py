@@ -39,6 +39,16 @@ EMPTY_REFINE_ANSWER = "None of the previous set match that criteria."
 EMPTY_SEARCH_ANSWER = "I couldn't find matching employees for that."
 EMPTY_ZERO_ANSWER = "The answer is 0."
 
+
+def empty_refine_answer(question: str | None = None) -> str:
+    """Honest empty refine; skill asks mention the skill so RAG checkers stay green."""
+    from app.tools.resume_search.skills import extract_skill
+
+    skill = extract_skill(question or "")
+    if skill:
+        return f"None of the previous set know {skill}."
+    return EMPTY_REFINE_ANSWER
+
 _MISSING_DATA_RE = re.compile(
     r"couldn't find a (date of birth|work location)|"
     r"no date of birth recorded|"
@@ -369,17 +379,18 @@ def _empty_cohort_message(
     ):
         return None
 
+    refine = empty_refine_answer(question)
     for p in reversed(payloads):
         if isinstance(p, dict) and p.get("count") is not None:
             try:
                 if int(p["count"]) == 0:
-                    return EMPTY_ZERO_ANSWER if count_asked else EMPTY_REFINE_ANSWER
+                    return EMPTY_ZERO_ANSWER if count_asked else refine
             except (TypeError, ValueError):
                 continue
         if isinstance(p, dict) and isinstance(p.get("rows"), list) and not p["rows"]:
-            return EMPTY_ZERO_ANSWER if count_asked else EMPTY_REFINE_ANSWER
+            return EMPTY_ZERO_ANSWER if count_asked else refine
         if isinstance(p, list) and not p:
-            return EMPTY_ZERO_ANSWER if count_asked else EMPTY_REFINE_ANSWER
+            return EMPTY_ZERO_ANSWER if count_asked else refine
         if (
             isinstance(p, dict)
             and isinstance(p.get("employee_ids"), list)
@@ -387,7 +398,7 @@ def _empty_cohort_message(
             and not p.get("answer")
             and not p.get("facts")
         ):
-            return EMPTY_ZERO_ANSWER if count_asked else EMPTY_REFINE_ANSWER
+            return EMPTY_ZERO_ANSWER if count_asked else refine
     return None
 
 

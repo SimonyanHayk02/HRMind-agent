@@ -17,6 +17,64 @@ def test_extract_who_speaks() -> None:
     assert req.matched and req.scope == "cohort" and req.language == "German"
 
 
+def test_extract_pronoun_known_languages() -> None:
+    for q in (
+        "give me information about her known languages",
+        "what languages does she speak?",
+        "her languages",
+    ):
+        req = extract_language(q)
+        assert req.matched and req.scope == "person", q
+        assert req.person_name is None, q
+
+
+def test_extract_named_person_languages() -> None:
+    req = extract_language("Tell me about Maya Khan's languages")
+    assert req.matched and req.scope == "person"
+    assert req.person_name == "Maya Khan"
+
+
+def test_bound_pronoun_languages_uses_resume_search() -> None:
+    from app.application.planning.bound_person import bound_person_attribute_plan
+
+    plan = bound_person_attribute_plan(
+        "give me information about her known languages",
+        employee_id="e00e3f63-5890-5627-8ca7-b2adabbe51b4",
+        display_name="Maya Khan",
+    )
+    assert len(plan.nodes) == 1
+    assert plan.nodes[0].name == "resume_search"
+    assert plan.nodes[0].params.get("purpose") == "languages_person"
+    assert plan.nodes[0].params.get("employee_ids") == [
+        "e00e3f63-5890-5627-8ca7-b2adabbe51b4"
+    ]
+
+
+def test_extract_pronoun_certifications() -> None:
+    from app.application.understanding.certifications import extract_certification
+
+    for q in (
+        "what certifications does she have?",
+        "her certifications",
+        "give me her certificates",
+    ):
+        req = extract_certification(q)
+        assert req.matched and req.scope == "person", q
+        assert req.person_name is None, q
+
+
+def test_bound_pronoun_certifications_uses_resume_search() -> None:
+    from app.application.planning.bound_person import bound_person_attribute_plan
+
+    plan = bound_person_attribute_plan(
+        "what certifications does she have?",
+        employee_id="e00e3f63-5890-5627-8ca7-b2adabbe51b4",
+        display_name="Maya Khan",
+    )
+    assert plan.nodes[0].name == "resume_search"
+    assert plan.nodes[0].params.get("purpose") == "certifications_person"
+
+
 def test_languages_plan_cohort() -> None:
     catalog = default_employee_catalog()
     state = extract_query_state("who speaks French?", catalog=catalog)

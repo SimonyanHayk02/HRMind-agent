@@ -12,8 +12,12 @@ from app.application.planning.plan_schema import ExecutionPlan
 from app.application.planning.unsupported import is_unsupported_topic
 from app.application.response.refusal import RefusalCode, out_of_scope_plan
 from app.application.understanding.birthday import extract_birthday
+from app.application.understanding.certifications import extract_certification
+from app.application.understanding.languages import extract_language
 from app.application.understanding.plan_from_query_state import (
     _birthday_plan,
+    _certifications_plan,
+    _languages_plan,
     _set_status_plan,
 )
 from app.application.understanding.status_change import extract_status_change
@@ -49,6 +53,30 @@ def bound_person_attribute_plan(
             )
         )
 
+    language = extract_language(q)
+    if language.matched and language.scope == "person":
+        return _languages_plan(
+            QueryState(
+                intent="languages",
+                language=language.language,
+                person_name=name,
+                person_employee_ids=ids,
+                confidence=0.95,
+            )
+        )
+
+    certification = extract_certification(q)
+    if certification.matched and certification.scope == "person":
+        return _certifications_plan(
+            QueryState(
+                intent="certifications",
+                certification=certification.certification,
+                person_name=name,
+                person_employee_ids=ids,
+                confidence=0.95,
+            )
+        )
+
     status = extract_status_change(q)
     if status.matched:
         return _set_status_plan(
@@ -78,7 +106,7 @@ def bound_person_attribute_plan(
         response_strategy="template",
         clarify_question=(
             f"What would you like to know about {name}? "
-            "For example: profile, manager, location, birthday, or status."
+            "For example: profile, manager, location, birthday, languages, or status."
         ),
         refusal_code=RefusalCode.AMBIGUOUS.value,
     )

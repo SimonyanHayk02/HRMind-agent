@@ -53,6 +53,33 @@ _COHORT_HINT_RE = re.compile(
     r"\b(?:who|employees?|people|staff|anyone|someone)\b",
     re.I,
 )
+_PRONOUN_RE = re.compile(r"\b(she|he|her|him|his|hers|they|them|their)\b", re.I)
+_PRONOUN_CERT_RE = re.compile(
+    r"\b(?:"
+    r"(?:her|his|their)\s+(?:certifications?|certificates?|licen[cs]es?|credentials?)|"
+    r"what\s+(?:certifications?|certificates?)\s+does\s+(?:she|he|they)\s+have|"
+    r"(?:certifications?|certificates?)\s+(?:does\s+)?(?:she|he|they)\s+have"
+    r")\b",
+    re.I,
+)
+_BAD_PERSON_NAMES = frozenset(
+    {
+        "who",
+        "anyone",
+        "someone",
+        "employees",
+        "people",
+        "she",
+        "he",
+        "her",
+        "him",
+        "his",
+        "hers",
+        "they",
+        "them",
+        "their",
+    }
+)
 
 
 @dataclass
@@ -62,6 +89,17 @@ class CertificationRequest:
     certification: str | None = None
     person_name: str | None = None
     refers_to_prior: bool = False
+
+
+def _clean_person_name(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    name = re.sub(r"'s$", "", raw.strip(), flags=re.I).strip(" '")
+    if not name or name.lower() in _BAD_PERSON_NAMES:
+        return None
+    if any(tok in _BAD_PERSON_NAMES for tok in name.lower().split()):
+        return None
+    return name
 
 
 def extract_certification(question: str) -> CertificationRequest:
@@ -75,14 +113,30 @@ def extract_certification(question: str) -> CertificationRequest:
 
     refers = bool(_PRIOR_SET_PHRASE_RE.search(q))
 
+    # Pronoun cert asks bind from session — never treat "she" as a person name.
+    if _PRONOUN_CERT_RE.search(q) or (
+        _CERT_HINT_RE.search(q) and _PRONOUN_RE.search(q) and not _COHORT_HINT_RE.search(q)
+    ):
+        return CertificationRequest(
+            matched=True,
+            scope="person",
+            refers_to_prior=refers,
+        )
+
     m = _PERSON_CERT_RE.search(q)
     if m:
-        name = (m.group("name") or m.group("name2") or "").strip()
+        name = _clean_person_name(m.group("name") or m.group("name2"))
         if name:
             return CertificationRequest(
                 matched=True,
                 scope="person",
                 person_name=name,
+                refers_to_prior=refers,
+            )
+        if _CERT_HINT_RE.search(q):
+            return CertificationRequest(
+                matched=True,
+                scope="person",
                 refers_to_prior=refers,
             )
 

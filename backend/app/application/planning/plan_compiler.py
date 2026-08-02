@@ -262,6 +262,7 @@ class PlanCompiler:
 
         # Explicit "Tell me about First Last" must use that full name — never the
         # prior first-name focus (Alice Bauer stealing Alice Nguyen).
+        # Resume-only facets (languages / certs / birthday) must not dump the profile.
         about = _ABOUT_PERSON_RE.search(q)
         if about:
             about_name = next((g for g in about.groups() if g), None)
@@ -274,6 +275,12 @@ class PlanCompiler:
                 and all(t[:1].isupper() for t in tokens)
                 and not re.search(
                     r"\b(most|senior|junior|average|tenure|oldest|longest)\b", q, re.I
+                )
+                and not re.search(
+                    r"\b(languages?|speaks?|spoken|fluent|certifications?|"
+                    r"certificates?|licen[cs]e|birthday|born|date of birth|\bdob\b)\b",
+                    q,
+                    re.I,
                 )
             ):
                 return (
@@ -487,6 +494,129 @@ class PlanCompiler:
                     )
                 ),
                 "heuristic_birthday",
+            )
+
+        # Languages live only in resumes — never dump an employee profile row.
+        from app.application.understanding.languages import extract_language
+        from app.application.understanding.plan_from_query_state import (
+            _languages_plan as _langs_plan,
+        )
+        from app.domain.query_state import QueryState as _LangQS
+
+        language_pre = extract_language(q)
+        if language_pre.matched:
+            prior_ids = (
+                list(memory.last_employee_ids)
+                if memory and memory.last_employee_ids
+                else []
+            )
+            if len(prior_ids) > 50:
+                prior_ids = []
+            bound_for_lang = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_lang
+                and memory
+                and len(memory.entity_memory) == 1
+                and language_pre.scope == "person"
+                and not language_pre.person_name
+            ):
+                bound_for_lang = str(memory.entity_memory[0].employee_id)
+            person_ids: list[str] = []
+            person_name = language_pre.person_name
+            if language_pre.scope == "person":
+                if bound_for_lang and not person_name:
+                    person_ids = [bound_for_lang]
+                    person_name = _entity_display_name(memory, bound_for_lang)
+                elif person_name:
+                    person_ids = []
+                elif language_pre.refers_to_prior and prior_ids:
+                    person_ids = list(prior_ids)
+                elif not person_name and not person_ids:
+                    return (
+                        ExecutionPlan(
+                            nodes=[],
+                            response_strategy="template",
+                            clarify_question="Whose languages would you like to know?",
+                            refusal_code=RefusalCode.AMBIGUOUS.value,
+                        ),
+                        "heuristic_languages",
+                    )
+            elif language_pre.refers_to_prior and prior_ids:
+                person_ids = list(prior_ids)
+            return (
+                _langs_plan(
+                    _LangQS(
+                        intent="languages",
+                        language=language_pre.language,
+                        person_name=person_name,
+                        person_employee_ids=person_ids,
+                        refers_to_prior=bool(person_ids)
+                        or language_pre.refers_to_prior,
+                        confidence=0.95,
+                    )
+                ),
+                "heuristic_languages",
+            )
+
+        # Certifications also live only in resumes.
+        from app.application.understanding.certifications import extract_certification
+        from app.application.understanding.plan_from_query_state import (
+            _certifications_plan as _certs_plan,
+        )
+        from app.domain.query_state import QueryState as _CertQS
+
+        cert_pre = extract_certification(q)
+        if cert_pre.matched:
+            prior_ids = (
+                list(memory.last_employee_ids)
+                if memory and memory.last_employee_ids
+                else []
+            )
+            if len(prior_ids) > 50:
+                prior_ids = []
+            bound_for_cert = _resolve_pronoun_employee_id(q, memory)
+            if (
+                not bound_for_cert
+                and memory
+                and len(memory.entity_memory) == 1
+                and cert_pre.scope == "person"
+                and not cert_pre.person_name
+            ):
+                bound_for_cert = str(memory.entity_memory[0].employee_id)
+            person_ids: list[str] = []
+            person_name = cert_pre.person_name
+            if cert_pre.scope == "person":
+                if bound_for_cert and not person_name:
+                    person_ids = [bound_for_cert]
+                    person_name = _entity_display_name(memory, bound_for_cert)
+                elif person_name:
+                    person_ids = []
+                elif cert_pre.refers_to_prior and prior_ids:
+                    person_ids = list(prior_ids)
+                elif not person_name and not person_ids:
+                    return (
+                        ExecutionPlan(
+                            nodes=[],
+                            response_strategy="template",
+                            clarify_question="Whose certifications would you like to know?",
+                            refusal_code=RefusalCode.AMBIGUOUS.value,
+                        ),
+                        "heuristic_certifications",
+                    )
+            elif cert_pre.refers_to_prior and prior_ids:
+                person_ids = list(prior_ids)
+            return (
+                _certs_plan(
+                    _CertQS(
+                        intent="certifications",
+                        certification=cert_pre.certification,
+                        person_name=person_name,
+                        person_employee_ids=person_ids,
+                        refers_to_prior=bool(person_ids) or cert_pre.refers_to_prior,
+                        confidence=0.95,
+                    )
+                ),
+                "heuristic_certifications",
             )
 
         pronoun_id = _resolve_pronoun_employee_id(q, memory)

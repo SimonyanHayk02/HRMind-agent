@@ -940,6 +940,17 @@ class PlanCompiler:
         use_primary_selector = self._tool_selecting_mode == "primary"
         use_residual_selector = self._tool_selecting_mode in {"primary", "residual"}
 
+        # High-confidence structured list/count (education/position/…) must win
+        # over tool_select — the LLM often drops filters and returns org-wide 100.
+        if (
+            query_state.intent in {"list", "count"}
+            and query_state.filters
+            and query_state.confidence >= 0.7
+        ):
+            structured = plan_from_query_state(query_state, memory=memory)
+            if structured is not None:
+                return structured, "guard_query_state"
+
         # Legacy deterministic cascade — skipped in primary mode (guards already ran).
         if not use_primary_selector:
             structured = plan_from_query_state(query_state, memory=memory)

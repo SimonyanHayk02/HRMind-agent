@@ -22,7 +22,7 @@ _RESUME_ENUM_COLS = frozenset({"country", "city"})
 class CatalogService:
     """Serves a schema catalog, optionally refreshed with live corpus values."""
 
-    CACHE_KEY = "schema_catalog:employees:v3"
+    CACHE_KEY = "schema_catalog:employees:v4"
 
     def __init__(
         self,

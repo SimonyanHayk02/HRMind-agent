@@ -368,7 +368,7 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
             )
         used_fields.add("position")
 
-    # Longer values first so "New York" wins over "York" if present
+    # Longer values first so "MSc Data Science" wins over alias "msc".
     candidates: list[tuple[str, str, str, float]] = []  # field, canonical, matched, conf
     for col in catalog.filterable_columns():
         if col.kind != "enum":
@@ -389,9 +389,57 @@ def _extract_filters(question: str, catalog: SchemaCatalog) -> list[FilterSlot]:
                 candidates.append((col.name, canon, raw, 0.95))
                 break  # one value per column per utterance for P0
 
-    for field, canon, _raw, conf in candidates:
+    for field, canon, raw, conf in candidates:
         if field in used_fields:
             continue
         used_fields.add(field)
+        if field == "education":
+            expanded = _expand_education_filter(raw, canon, catalog)
+            if len(expanded) > 1:
+                found.append(
+                    FilterSlot(field=field, op="in", value=expanded, confidence=conf)
+                )
+                continue
+            if len(expanded) == 1:
+                found.append(
+                    FilterSlot(field=field, op="eq", value=expanded[0], confidence=conf)
+                )
+                continue
         found.append(FilterSlot(field=field, op="eq", value=canon, confidence=conf))
     return found
+
+
+# Degree-level aliases → match every catalog education that is that level.
+# Exact values like "MSc Data Science" stay exact (matched as a catalog value first).
+_EDU_LEVEL_PATTERNS: dict[str, re.Pattern[str]] = {
+    "masters": re.compile(r"\b(msc|mba|masters?)\b", re.I),
+    "master": re.compile(r"\b(msc|mba|masters?)\b", re.I),
+    "master's": re.compile(r"\b(msc|mba|masters?)\b", re.I),
+    "msc": re.compile(r"\bmsc\b", re.I),
+    "mba": re.compile(r"\bmba\b", re.I),
+    "bachelor": re.compile(r"\b(bsc|ba|bachelors?)\b", re.I),
+    "bachelors": re.compile(r"\b(bsc|ba|bachelors?)\b", re.I),
+    "bachelor's": re.compile(r"\b(bsc|ba|bachelors?)\b", re.I),
+    "bs": re.compile(r"\b(bsc|bs)\b", re.I),
+    "bsc": re.compile(r"\bbsc\b", re.I),
+    "ba": re.compile(r"\bba\b", re.I),
+}
+
+
+def _expand_education_filter(
+    matched_raw: str, canon: str, catalog: SchemaCatalog
+) -> list[str]:
+    """Map degree-level wording onto every matching education value in the catalog."""
+    col = catalog.by_name("education")
+    values = list(col.values) if col is not None else []
+    key = (matched_raw or "").strip().lower()
+    # Exact catalog value (including warmed free-text like "MSc Data Science").
+    for v in values:
+        if v.lower() == key:
+            return [v]
+    pat = _EDU_LEVEL_PATTERNS.get(key)
+    if pat is not None and values:
+        matched = [v for v in values if pat.search(v)]
+        if matched:
+            return matched
+    return [canon] if canon else []

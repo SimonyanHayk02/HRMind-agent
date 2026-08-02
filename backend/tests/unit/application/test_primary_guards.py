@@ -209,3 +209,37 @@ def test_skill_empty_refine_mentions_skill() -> None:
     assert empty_refine_answer("of them?") == (
         "None of the previous set match that criteria."
     )
+
+
+def test_primary_education_and_department_beat_tool_select() -> None:
+    """Structured filters must not fall through to unconstrained tool_select SQL."""
+
+    async def _run() -> None:
+        edu, emode, _ = await _compiler().compile(
+            "give all employees who has masters degree",
+            auth=AUTH,
+            memory=_memory(),
+        )
+        assert emode == "guard_query_state", emode
+        edu_filter = edu.nodes[-1].params["filters"]["education"]
+        assert isinstance(edu_filter, list)
+        assert "MBA / MSc" in edu_filter
+        assert "MSc Data Science" in edu_filter
+
+        count, cmode, _ = await _compiler().compile(
+            "How many employees work in Engineering?",
+            auth=AUTH,
+            memory=_memory(),
+        )
+        assert cmode == "guard_query_state", cmode
+        assert count.nodes[-1].params["filters"]["department"] == "Engineering"
+
+        exact, xmode, _ = await _compiler().compile(
+            "give all employees education is MSc Data Science",
+            auth=AUTH,
+            memory=_memory(),
+        )
+        assert xmode == "guard_query_state", xmode
+        assert exact.nodes[-1].params["filters"]["education"] == "MSc Data Science"
+
+    asyncio.run(_run())

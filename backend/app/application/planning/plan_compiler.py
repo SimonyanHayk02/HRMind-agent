@@ -764,36 +764,6 @@ class PlanCompiler:
                     )
                 return _pronoun_clarify_plan(), "heuristic_pronoun"
 
-        # Bare elliptical SQL attrs ("what is the education?") about the bound person.
-        from app.application.planning.heuristic_planner import (
-            elliptical_bound_person_plan,
-        )
-
-        elliptical = elliptical_bound_person_plan(q, memory=memory)
-        if elliptical is not None:
-            return elliptical, "heuristic_elliptical_person"
-
-        # Birthday + pronoun without other profile cues (e.g. "when was she born").
-        birthday_early = extract_birthday(q)
-        if (
-            birthday_early.matched
-            and birthday_early.scope == "person"
-            and _PRONOUN_ONLY_RE.search(q)
-            and not birthday_early.person_name
-        ):
-            bound_id = pronoun_id
-            if not bound_id and memory and len(memory.entity_memory) == 1:
-                bound_id = str(memory.entity_memory[0].employee_id)
-            if bound_id:
-                name = _entity_display_name(memory, bound_id)
-                return (
-                    bound_person_attribute_plan(
-                        q, employee_id=bound_id, display_name=name
-                    ),
-                    "heuristic_pronoun",
-                )
-            return _pronoun_clarify_plan(), "heuristic_pronoun"
-
         catalog = self._catalog.get() if self._catalog else default_employee_catalog()
         query_state = extract_query_state(question, catalog=catalog, memory=memory)
 
@@ -950,6 +920,37 @@ class PlanCompiler:
             structured = plan_from_query_state(query_state, memory=memory)
             if structured is not None:
                 return structured, "guard_query_state"
+
+        # Bare elliptical SQL attrs ("what is the education?") about the bound person.
+        # Runs *after* structured cohort filters so typo'd "all emplyees education is…"
+        # cannot bind to the focused person.
+        from app.application.planning.heuristic_planner import (
+            elliptical_bound_person_plan,
+        )
+
+        elliptical = elliptical_bound_person_plan(q, memory=memory)
+        if elliptical is not None:
+            return elliptical, "heuristic_elliptical_person"
+
+        birthday_early = extract_birthday(q)
+        if (
+            birthday_early.matched
+            and birthday_early.scope == "person"
+            and _PRONOUN_ONLY_RE.search(q)
+            and not birthday_early.person_name
+        ):
+            bound_id = pronoun_id
+            if not bound_id and memory and len(memory.entity_memory) == 1:
+                bound_id = str(memory.entity_memory[0].employee_id)
+            if bound_id:
+                name = _entity_display_name(memory, bound_id)
+                return (
+                    bound_person_attribute_plan(
+                        q, employee_id=bound_id, display_name=name
+                    ),
+                    "heuristic_pronoun",
+                )
+            return _pronoun_clarify_plan(), "heuristic_pronoun"
 
         # Legacy deterministic cascade — skipped in primary mode (guards already ran).
         if not use_primary_selector:

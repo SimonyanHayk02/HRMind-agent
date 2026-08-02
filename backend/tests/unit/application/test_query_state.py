@@ -68,6 +68,20 @@ def test_extract_exact_msc_data_science() -> None:
     assert plan.nodes[-1].params["filters"]["education"] == "MSc Data Science"
 
 
+def test_extract_msc_alias_inside_value_does_not_expand() -> None:
+    """Short alias 'msc' must not win over the full 'MSc Data Science' value."""
+    catalog = default_employee_catalog()
+    for q in (
+        "give all emplyees education is  MSc Data Science",
+        "all employees with education is  MSc Data Science",
+    ):
+        state = extract_query_state(q, catalog=catalog)
+        edu = next(f for f in state.filters if f.field == "education")
+        assert edu.op == "eq", q
+        assert edu.value == "MSc Data Science", q
+
+
+
 def test_extract_united_states_alias() -> None:
     catalog = default_employee_catalog()
     state = extract_query_state(

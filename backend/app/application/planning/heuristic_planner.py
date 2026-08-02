@@ -634,12 +634,17 @@ _MAX_ELLIPTICAL_TOKENS = 8
 
 # Org/cohort asks must never bind to the focused person ("how many employees…",
 # "names who live in Dubai") even when session focus is a single employee.
+# Include common "employees" typos so "give all emplyees education is …" stays cohort.
 _COHORT_ASK_RE = re.compile(
     r"\b("
     r"how\s+many|how\s+much|"
     r"(?:all|which|list|show|give|gimme|find)\s+"
-    r"(?:(?:the|all|our)\s+)?(?:employees?|people|folks|staff|names?|ppl)|"
-    r"employees?\s+(?:who|that|with|have|knows?|lives?|living|in|from)|"
+    r"(?:(?:the|all|our)\s+)?"
+    r"(?:employees?|emplyees?|employes?|employess|people|folks|staff|names?|ppl)|"
+    r"(?:employees?|emplyees?|employes?)\s+"
+    r"(?:who|that|with|have|knows?|lives?|living|in|from)|"
+    r"(?:all|list|show|give)\s+(?:\w+\s+){0,3}(?:with|have|having)\s+education|"
+    r"education\s+is\b|"
     r"names?\s+(?:who|that|of)|"
     r"who\s+(?:knows?|lives?|works?|are|is\s+in)|"
     r"headcount|total\s+employees?"

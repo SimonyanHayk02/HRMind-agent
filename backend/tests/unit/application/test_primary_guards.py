@@ -12,7 +12,7 @@ from app.application.response.refusal import empty_refine_answer
 from app.application.planning.heuristic_planner import try_heuristic_plan
 from app.domain.auth import AuthContext
 from app.domain.enums import Role
-from app.domain.session import EntityRef, LastFocus, SessionMemory
+from app.domain.session import ActiveReferent, EntityRef, LastFocus, SessionMemory
 from app.domain.tools.registry import ToolRegistry
 
 E1 = UUID("00000000-0000-0000-0000-000000000001")
@@ -241,5 +241,33 @@ def test_primary_education_and_department_beat_tool_select() -> None:
         )
         assert xmode == "guard_query_state", xmode
         assert exact.nodes[-1].params["filters"]["education"] == "MSc Data Science"
+
+    asyncio.run(_run())
+
+
+def test_education_cohort_beats_bound_person_even_with_typo() -> None:
+    """After focusing Rafael, a typo'd all-employees education ask must stay cohort."""
+    mem = _memory(
+        entity_memory=[
+            EntityRef(
+                employee_id=E1,
+                display_name="Rafael Lopez",
+                aliases=["Rafael"],
+            )
+        ],
+        person_bindings={"he": str(E1), "his": str(E1), "him": str(E1)},
+        active_referent=ActiveReferent(ids=[str(E1)], label="Rafael Lopez"),
+    )
+
+    async def _run() -> None:
+        plan, mode, _ = await _compiler().compile(
+            "give all emplyees education is  MSc Data Science",
+            auth=AUTH,
+            memory=mem,
+        )
+        assert mode == "guard_query_state", mode
+        assert plan.nodes[-1].name == "sql"
+        assert plan.nodes[-1].params["filters"]["education"] == "MSc Data Science"
+        assert plan.nodes[-1].params.get("action") != "by_id"
 
     asyncio.run(_run())
